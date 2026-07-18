@@ -1,4 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import yfinance as yf
+
+from stock.data import _suffix, _yield_as_decimal
+from stock.yf_errors import YFINANCE_EXCEPTIONS
 from stock.normalizer import STOCK_DB
 from utils.cache import cache_get, cache_set
 from utils.logger import get_logger
@@ -6,8 +11,35 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _suffix(market: str) -> str:
-    return ".TWO" if market == "上櫃" else ".TW"
+def _fetch_peer(stock_id: str, stock: dict) -> dict:
+    name = stock.get("name", stock_id)
+    result = {
+        "stock_id": stock_id,
+        "name": name,
+        "pe": None,
+        "price": None,
+        "dividend_yield": None,
+        "market_cap": None,
+    }
+    try:
+        ticker = yf.Ticker(stock_id + _suffix(stock.get("market")))
+        info = ticker.info or {}
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
+        result.update({
+            "pe": round(float(info["trailingPE"]), 2) if info.get("trailingPE") is not None else None,
+            "price": round(float(price), 2) if price is not None else None,
+            "market_cap": info.get("marketCap"),
+        })
+        normalized_yield = _yield_as_decimal(
+            info.get("dividendYield"),
+            info.get("dividendRate"),
+            price,
+        )
+        if normalized_yield is not None:
+            result["dividend_yield"] = round(normalized_yield * 100, 2)
+    except YFINANCE_EXCEPTIONS as exc:
+        logger.debug("peer fetch failed for %s: %s", stock_id, exc)
+    return result
 
 
 def get_peers_comparison(
@@ -18,61 +50,34 @@ def get_peers_comparison(
 ) -> list[dict]:
     if not industry:
         return []
-
     cache_key = f"peers:{industry}:{market}"
-    cached = cache_get(cache_key, "peers")
+    cached = cache_get(cache_key, "peers", max_age_sec=3600)
     if cached is not None:
         return cached
 
-    peers = []
-    for sid, info in STOCK_DB.items():
-        if sid == stock_id:
-            continue
-        if info.get("industry") != industry:
-            continue
-        if market and info.get("market") != market:
-            continue
-        peers.append((sid, info["name"]))
-        if len(peers) >= max_peers:
-            break
-
-    if not peers:
+    candidates = [
+        (candidate_id, info)
+        for candidate_id, info in STOCK_DB.items()
+        if candidate_id != stock_id
+        and info.get("industry") == industry
+        and (not market or info.get("market") == market)
+    ][:max_peers]
+    if not candidates:
         return []
 
-    suffix = _suffix(market) if market else ".TW"
-    result = []
-    for sid, name in peers:
-        try:
-            ticker = yf.Ticker(sid + suffix)
-            info = ticker.info
-            trailing_pe = info.get("trailingPE")
-            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
-            dividend_yield = info.get("dividendYield")
-            market_cap = info.get("marketCap")
-            if dividend_yield is not None:
-                dividend_yield = round(dividend_yield * 100, 2)
-            if current_price is not None:
-                current_price = round(current_price, 2)
-            if trailing_pe is not None:
-                trailing_pe = round(trailing_pe, 2)
-            result.append({
-                "stock_id": sid,
-                "name": name,
-                "pe": trailing_pe,
-                "price": current_price,
-                "dividend_yield": dividend_yield,
-                "market_cap": market_cap,
-            })
-        except Exception as e:
-            logger.debug("peer fetch failed for %s: %s", sid, e)
-            result.append({
-                "stock_id": sid,
-                "name": name,
-                "pe": None,
-                "price": None,
-                "dividend_yield": None,
-                "market_cap": None,
-            })
-
-    cache_set(cache_key, "peers", result)
-    return result
+    indexed = {candidate_id: index for index, (candidate_id, _) in enumerate(candidates)}
+    results = []
+    with ThreadPoolExecutor(max_workers=min(5, len(candidates))) as executor:
+        futures = {
+            executor.submit(_fetch_peer, candidate_id, info): candidate_id
+            for candidate_id, info in candidates
+        }
+        for future in as_completed(futures):
+            candidate_id = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                logger.debug("peer worker failed for %s: %s", candidate_id, exc)
+    results.sort(key=lambda item: indexed.get(item["stock_id"], 999))
+    cache_set(cache_key, "peers", results)
+    return results

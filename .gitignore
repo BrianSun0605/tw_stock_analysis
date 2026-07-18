@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+pytest-cache-files-*/
 .coverage
 htmlcov/
 
@@ -16,6 +17,10 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Legacy artwork retained locally but not shipped
+picture/side/
+picture/border/
 
 # Generated application data
 cache/

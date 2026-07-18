@@ -382,43 +382,150 @@ STOCK_DB = {
     "9958": {"name": "世紀鋼", "industry": "鋼鐵", "market": "上市", "aliases": []},
 }
 
-CACHE_FILE = os.path.join(CACHE_DIR, "stock_mapping.json")
+FALLBACK_STOCK_DB = {
+    stock_id: {
+        **info,
+        "aliases": list(info.get("aliases", [])),
+    }
+    for stock_id, info in STOCK_DB.items()
+}
 
-NAME_TO_ID = {}
-for sid, info in STOCK_DB.items():
-    NAME_TO_ID[info["name"]] = sid
-    for alias in info.get("aliases", []):
-        NAME_TO_ID[alias] = sid
+INDUSTRY_CODES = {
+    "01": "水泥", "02": "食品", "03": "塑膠", "04": "紡織纖維",
+    "05": "電機機械", "06": "電器電纜", "07": "化學",
+    "08": "玻璃陶瓷", "09": "造紙", "10": "鋼鐵", "11": "橡膠",
+    "12": "汽車", "14": "建材營造", "15": "航運", "16": "觀光餐旅",
+    "17": "金融保險", "18": "貿易百貨", "19": "綜合", "20": "其他",
+    "21": "化學", "22": "生技醫療", "23": "油電燃氣",
+    "24": "半導體", "25": "電腦及週邊設備", "26": "光電",
+    "27": "通信網路", "28": "電子零組件", "29": "電子通路",
+    "30": "資訊服務", "31": "其他電子", "32": "文化創意",
+    "33": "農業科技", "34": "電子商務", "35": "綠能環保",
+    "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
+}
+
+NAME_TO_ID: Dict[str, str] = {}
+STOCK_DB_SOURCE = "built_in_fallback"
+_STOCK_DB_LOADED = False
 
 
-def _fetch_stock_list_from_twse() -> Optional[Any]:
+def _rebuild_name_index() -> None:
+    NAME_TO_ID.clear()
+    for stock_id, info in STOCK_DB.items():
+        NAME_TO_ID[info["name"]] = stock_id
+        for alias in info.get("aliases", []):
+            NAME_TO_ID[alias] = stock_id
+
+
+def _parse_official_rows(rows: Any, market: str) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stock_id = str(row.get("SecuritiesCompanyCode") or row.get("公司代號") or "").strip()
+        if not re.fullmatch(r"\d{4,6}", stock_id):
+            continue
+        name = str(row.get("CompanyAbbreviation") or row.get("公司簡稱") or "").strip().rstrip("*").strip()
+        if not name:
+            continue
+        code = str(row.get("SecuritiesIndustryCode") or row.get("產業別") or "").strip().zfill(2)
+        fallback = FALLBACK_STOCK_DB.get(stock_id, {})
+        aliases = list(fallback.get("aliases", []))
+        full_name = str(row.get("CompanyName") or row.get("公司名稱") or "").strip()
+        if full_name and full_name not in aliases and full_name != name:
+            aliases.append(full_name)
+        result[stock_id] = {
+            "name": name,
+            "industry": INDUSTRY_CODES.get(code, fallback.get("industry", "")),
+            "industry_code": code,
+            "market": market,
+            "aliases": aliases,
+            "source": "TWSE OpenAPI" if market == "上市" else "TPEx OpenAPI",
+        }
+    return result
+
+
+def _fetch_stock_list_from_twse() -> Dict[str, Dict[str, Any]]:
     try:
-        resp = requests.get(
-            "https://openapi.twse.com.tw/v1/exchangeReport/TWTB4U",
+        response = requests.get(
+            "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
             headers=HEADERS,
             timeout=TIMEOUT,
         )
-        if resp.status_code == 200:
-            return resp.json()
-    except requests.RequestException as e:
-        logger.warning("TWSE stock list fetch failed: %s", e)
-    return None
+        response.raise_for_status()
+        return _parse_official_rows(response.json(), "上市")
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("TWSE stock list fetch failed: %s", exc)
+        return {}
 
 
-def _fetch_tpex_stock_list() -> Optional[Any]:
+def _fetch_tpex_stock_list() -> Dict[str, Dict[str, Any]]:
     try:
-        url = "https://www.tpex.org.tw/openapi/v1/mopsfinmindqry"
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        if resp.status_code == 200:
-            return resp.json()
-    except requests.RequestException as e:
-        logger.warning("TPEx stock list fetch failed: %s", e)
-    return None
+        response = requests.get(
+            "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        return _parse_official_rows(response.json(), "上櫃")
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("TPEx stock list fetch failed: %s", exc)
+        return {}
+
+
+def _load_official_snapshot() -> Dict[str, Dict[str, Any]]:
+    snapshot_path = os.path.join(os.path.dirname(__file__), "official_stock_snapshot.json")
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        stocks = payload.get("stocks", {})
+        return stocks if isinstance(stocks, dict) and len(stocks) >= 1500 else {}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def refresh_stock_db(force: bool = False) -> str:
+    """Load a validated cache or tracked official snapshot; network refresh is explicit."""
+    global _STOCK_DB_LOADED, STOCK_DB_SOURCE
+    if _STOCK_DB_LOADED and not force:
+        return STOCK_DB_SOURCE
+
+    from utils.cache import cache_get, cache_set
+
+    cached = None if force else cache_get("official", "stock_mapping_v4", max_age_sec=7 * 86400)
+    mapping: Dict[str, Dict[str, Any]] = {}
+    if isinstance(cached, dict) and len(cached) >= 1500:
+        mapping = cached
+        STOCK_DB_SOURCE = "official_cache"
+    if force:
+        listed = _fetch_stock_list_from_twse()
+        otc = _fetch_tpex_stock_list()
+        if len(listed) >= 800 and len(otc) >= 700:
+            mapping = {**listed, **otc}
+            cache_set("official", "stock_mapping_v4", mapping)
+            STOCK_DB_SOURCE = "official_live"
+    if not mapping:
+        mapping = _load_official_snapshot()
+        if mapping:
+            STOCK_DB_SOURCE = "official_snapshot"
+
+    if mapping:
+        STOCK_DB.clear()
+        STOCK_DB.update(mapping)
+    else:
+        STOCK_DB.clear()
+        STOCK_DB.update(FALLBACK_STOCK_DB)
+        STOCK_DB_SOURCE = "built_in_fallback"
+    _rebuild_name_index()
+    _STOCK_DB_LOADED = True
+    return STOCK_DB_SOURCE
 
 
 def normalize(query: str) -> Dict[str, Any]:
-    raw = query.strip()
-    # 支援「2330 台積電」這種空白分隔的查詢 — 第一個 token 如果是數字就當 stock_id
+    refresh_stock_db()
+    raw = str(query or "").strip()
     tokens = raw.split()
     if tokens and tokens[0].isdigit():
         stock_id = tokens[0]
@@ -426,47 +533,40 @@ def normalize(query: str) -> Dict[str, Any]:
             info = STOCK_DB[stock_id].copy()
             info["stock_id"] = stock_id
             return info
-        name = raw[len(stock_id):].strip() or tokens[1] if len(tokens) > 1 else stock_id
-        return {"stock_id": stock_id, "name": name, "industry": "", "market": "", "aliases": []}
-    query = raw.replace(" ", "")
-    if query.isdigit():
-        stock_id = query
-        if stock_id in STOCK_DB:
-            info = STOCK_DB[stock_id].copy()
-            info["stock_id"] = stock_id
-            return info
-        return {"stock_id": stock_id, "name": query, "industry": "", "market": "", "aliases": []}
-    stock_id = NAME_TO_ID.get(query)
+        supplied_name = raw[len(stock_id):].strip()
+        name = supplied_name if supplied_name else stock_id
+        return {"stock_id": stock_id, "name": name, "industry": "", "market": "", "aliases": [], "source": "user_input"}
+
+    normalized_query = raw.replace(" ", "")
+    stock_id = NAME_TO_ID.get(normalized_query)
     if stock_id:
         info = STOCK_DB[stock_id].copy()
         info["stock_id"] = stock_id
         return info
-    return {"stock_id": "", "name": query, "industry": "", "market": "", "aliases": []}
+    return {"stock_id": "", "name": normalized_query, "industry": "", "market": "", "aliases": []}
 
 
 def search_stock(query: str) -> List[Dict[str, Any]]:
+    refresh_stock_db()
+    value = str(query or "").strip()
+    if not value:
+        return []
+    lower_query = value.lower()
     results = []
-    lower_query = query.lower()
-    for sid, info in STOCK_DB.items():
-        if query == sid or query == info["name"]:
-            r = info.copy()
-            r["stock_id"] = sid
-            return [r]
-    for sid, info in STOCK_DB.items():
-        if query in sid or query in info["name"] or any(query in a for a in info.get("aliases", [])):
-            r = info.copy()
-            r["stock_id"] = sid
-            if r not in results:
-                results.append(r)
-    for sid, info in STOCK_DB.items():
-        if lower_query in info["name"].lower():
-            if not any(r["stock_id"] == sid for r in results):
-                r = info.copy()
-                r["stock_id"] = sid
-                results.append(r)
-    results.sort(key=lambda x: (
-        0 if query == x["stock_id"] or query == x["name"]
-        else 1 if x["stock_id"].startswith(query) or x["name"].startswith(query)
-        else 2
+    for stock_id, info in STOCK_DB.items():
+        aliases = info.get("aliases", [])
+        haystacks = [stock_id, info["name"], *aliases]
+        if any(lower_query in str(item).lower() for item in haystacks):
+            result = info.copy()
+            result["stock_id"] = stock_id
+            results.append(result)
+    results.sort(key=lambda item: (
+        0 if value in (item["stock_id"], item["name"]) else
+        1 if item["stock_id"].startswith(value) or item["name"].startswith(value) else
+        2,
+        item["stock_id"],
     ))
-    return results
+    return results[:30]
+
+
+_rebuild_name_index()

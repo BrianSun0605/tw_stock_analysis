@@ -8,32 +8,57 @@ from typing import Any, Dict, List, Optional, Tuple
 # 輔助函數
 # ═══════════════════════════════════════════════════
 
+def _quarter_ordinal(year: int, quarter: int) -> int:
+    return year * 4 + quarter - 1
+
+
+def _is_consecutive_quarters(window: List[Dict[str, Any]]) -> bool:
+    if not window:
+        return False
+    ordinals = [_quarter_ordinal(int(item["year"]), int(item["quarter"])) for item in window]
+    return all(current - previous == 1 for previous, current in zip(ordinals, ordinals[1:]))
+
+
 def _calc_ttm_eps(eps_data: List[Dict[str, Any]]) -> Tuple[Dict[Tuple[int, int], float], List[Dict[str, Any]]]:
-    eps_sorted = sorted(eps_data, key=lambda x: (x["year"], x["quarter"]))
+    valid = [
+        item for item in eps_data
+        if item.get("year") is not None
+        and item.get("quarter") in (1, 2, 3, 4)
+        and item.get("eps") is not None
+    ]
+    eps_sorted = sorted(valid, key=lambda x: (x["year"], x["quarter"]))
     ttm_map: Dict[Tuple[int, int], float] = {}
     for i in range(len(eps_sorted)):
         if i >= 3:
-            ttm = sum(eps_sorted[j]["eps"] for j in range(i - 3, i + 1))
+            window = eps_sorted[i - 3:i + 1]
+            if not _is_consecutive_quarters(window):
+                continue
+            ttm = sum(float(item["eps"]) for item in window)
             q = eps_sorted[i]
             ttm_map[(q["year"], q["quarter"])] = round(ttm, 4)
     return ttm_map, eps_sorted
 
 
-def _quarter_for_date(dt: datetime) -> Tuple[int, int]:
-    return (dt.year, (dt.month - 1) // 3 + 1)
+def _filing_available_date(year: int, quarter: int) -> datetime:
+    """Return a conservative public-availability date for quarterly results."""
+    if quarter == 1:
+        return datetime(year, 5, 15)
+    if quarter == 2:
+        return datetime(year, 8, 14)
+    if quarter == 3:
+        return datetime(year, 11, 14)
+    return datetime(year + 1, 3, 31)
 
 
 def _get_ttm_for_date(dt: datetime, ttm_map: Dict[Tuple[int, int], float], eps_sorted: List[Dict[str, Any]]) -> Optional[float]:
-    y, q = _quarter_for_date(dt)
-    candidates = [(ky, kv) for ky, kv in ttm_map.items()
-                  if ky[0] < y or (ky[0] == y and ky[1] <= q)]
+    comparable_dt = dt.replace(tzinfo=None)
+    candidates = [
+        (key, value) for key, value in ttm_map.items()
+        if _filing_available_date(key[0], key[1]) <= comparable_dt
+    ]
     if candidates:
         candidates.sort(key=lambda x: (x[0][0], x[0][1]))
         return candidates[-1][1]
-    if eps_sorted:
-        window = eps_sorted[-4:]
-        if len(window) == 4:
-            return round(sum(e["eps"] for e in window), 4)
     return None
 
 
@@ -140,23 +165,29 @@ class ValuationAnalyzer:
             df_1y = self.price_data["6m"].get("df")
 
         self._daily_prices = []
+        self._price_series = pd.Series(dtype=float)
         self._daily_pe = []
         if df_1y is not None and not df_1y.empty:
+            series_values = []
+            series_index = []
             for idx, row in df_1y.iterrows():
                 dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
                 price = float(row.get("close", row.get("Close", 0)))
                 if price <= 0:
                     continue
                 self._daily_prices.append(price)
+                series_values.append(price)
+                series_index.append(pd.Timestamp(idx))
                 ttm = _get_ttm_for_date(dt, self.ttm_map, self.eps_sorted)
                 if ttm and ttm > 0:
                     pe = price / ttm
                     self._daily_pe.append(pe)
+            self._price_series = pd.Series(series_values, index=series_index, dtype=float).sort_index()
 
         self._pe_arr = np.array(self._daily_pe) if self._daily_pe else np.array([])
         self._price_arr = np.array(self._daily_prices) if self._daily_prices else np.array([])
 
-        if len(self._pe_arr) >= 5:
+        if len(self._pe_arr) >= 60:
             self._pe_percentiles = {
                 "p5": float(np.percentile(self._pe_arr, 5)),
                 "p10": float(np.percentile(self._pe_arr, 10)),
@@ -185,10 +216,9 @@ class ValuationAnalyzer:
         成長調整因子截斷在 -20% ~ +50%，分別以 50%/80%/100% 權重套用。
         """
         ttm = _safe_get(self.price_info, "trailingEps")
-        if not ttm and self.eps_sorted:
-            last4 = self.eps_sorted[-4:]
-            if len(last4) == 4:
-                ttm = round(sum(e["eps"] for e in last4), 2)
+        if not ttm and self.ttm_map:
+            latest_key = max(self.ttm_map)
+            ttm = self.ttm_map[latest_key]
         if not ttm or ttm <= 0:
             return None
 
@@ -204,38 +234,43 @@ class ValuationAnalyzer:
                 "note": "歷史 PE 數據不足，無法計算合理價區間",
             }
 
-        cheap = round(ttm * p["p25"], 2)
-        fair = round(ttm * p["p50"], 2)
-        expensive = round(ttm * p["p75"], 2)
-
-        pe_p25 = round(p["p25"], 2)
-        pe_p50 = round(p["p50"], 2)
-        pe_p75 = round(p["p75"], 2)
+        historical_multiples = {
+            "p25": round(p["p25"], 2),
+            "p50": round(p["p50"], 2),
+            "p75": round(p["p75"], 2),
+            "mean": round(p["mean"], 2),
+        }
+        adjusted_multiples = dict(historical_multiples)
         eps_growth = self._eps_growth_rate
         if eps_growth is not None:
-            adj = max(-0.2, min(0.5, eps_growth))
-            cheap = round(ttm * p["p25"] * (1 + adj * 0.5), 2)
-            fair = round(ttm * p["p50"] * (1 + adj * 0.8), 2)
-            expensive = round(ttm * p["p75"] * (1 + adj * 1.0), 2)
-            pe_p25 = round(p["p25"] * (1 + adj * 0.5), 2)
-            pe_p50 = round(p["p50"] * (1 + adj * 0.8), 2)
-            pe_p75 = round(p["p75"] * (1 + adj * 1.0), 2)
+            adjustment = max(-0.2, min(0.5, eps_growth))
+            adjusted_multiples.update({
+                "p25": round(p["p25"] * (1 + adjustment * 0.5), 2),
+                "p50": round(p["p50"] * (1 + adjustment * 0.8), 2),
+                "p75": round(p["p75"] * (1 + adjustment), 2),
+            })
+        cheap = round(ttm * adjusted_multiples["p25"], 2)
+        fair = round(ttm * adjusted_multiples["p50"], 2)
+        expensive = round(ttm * adjusted_multiples["p75"], 2)
 
         return {
             "ttm_eps": ttm,
             "current_price": self.current_price,
             "current_pe": round(self.current_price / ttm, 2) if self.current_price and ttm else None,
-            "pe_p25": pe_p25,
-            "pe_p50": pe_p50,
-            "pe_p75": pe_p75,
-            "pe_mean": round(p["mean"], 2),
+            "pe_p25": historical_multiples["p25"],
+            "pe_p50": historical_multiples["p50"],
+            "pe_p75": historical_multiples["p75"],
+            "pe_mean": historical_multiples["mean"],
             "pe_std": round(p["std"], 2),
+            "historical_pe_percentiles": historical_multiples,
+            "growth_adjusted_multiples": adjusted_multiples,
+            "sample_size": int(len(self._pe_arr)),
             "cheap": cheap,
             "fair": fair,
             "expensive": expensive,
             "margin_safety_8": round(fair * 0.8, 2),
             "margin_safety_7": round(fair * 0.7, 2),
-            "eps_growth_rate": round(eps_growth, 3) if eps_growth is not None else None,
+            "eps_growth_rate": round(eps_growth, 4) if eps_growth is not None else None,
         }
 
     # ═══════════════════════════════════════════
@@ -275,13 +310,17 @@ class ValuationAnalyzer:
             return 0.80
 
     def _estimate_volatility(self) -> float:
-        prices = self._price_arr
+        prices = self._price_series
         if len(prices) < 10:
             return 0.25
-        log_rets = np.diff(np.log(prices[prices > 0]))
-        if len(log_rets) < 5:
+        log_prices = np.log(prices[prices > 0])
+        log_returns = log_prices.diff().dropna()
+        day_gaps = log_prices.index.to_series().diff().dt.total_seconds().div(86400).dropna()
+        normalized = log_returns / np.sqrt(day_gaps.reindex(log_returns.index).clip(lower=1))
+        normalized = normalized.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(normalized) < 5:
             return 0.25
-        return float(np.std(log_rets) * np.sqrt(252))
+        return float(normalized.std(ddof=1) * np.sqrt(365))
 
     # ═══════════════════════════════════════════
     # 模組 3：PEG 與 EPS 成長
@@ -294,16 +333,20 @@ class ValuationAnalyzer:
             current_pe = self.current_price / ttm_eps
 
         eps_growth = self._calc_eps_growth_rate()
+        growth_fields = {
+            "eps_growth_rate": round(eps_growth, 4) if eps_growth is not None else None,
+            "eps_growth_decimal": round(eps_growth, 4) if eps_growth is not None else None,
+            "eps_growth_pct": round(eps_growth * 100, 2) if eps_growth is not None else None,
+        }
         if not current_pe or current_pe <= 0:
-            return {"peg": None, "pe": None, "eps_growth_rate": eps_growth,
-                     "verdict": "本益比數據不足，無法計算 PEG"}
+            return {"peg": None, "pe": None, **growth_fields,
+                    "verdict": "本益比數據不足，無法計算 PEG"}
         if eps_growth is None:
-            return {"peg": None, "pe": round(current_pe, 2), "eps_growth_rate": None,
-                     "verdict": "EPS 歷史資料不足，無法計算成長率"}
+            return {"peg": None, "pe": round(current_pe, 2), **growth_fields,
+                    "verdict": "需要兩組完整且連續的四季 EPS 才能計算成長率"}
         if eps_growth <= 0:
-            return {"peg": None, "pe": round(current_pe, 2),
-                     "eps_growth_rate": round(eps_growth, 3),
-                     "verdict": "EPS 成長率為負或零，PEG 不具參考意義"}
+            return {"peg": None, "pe": round(current_pe, 2), **growth_fields,
+                    "verdict": "EPS 成長率為負或零，PEG 不具參考意義"}
         peg = round(current_pe / (eps_growth * 100), 2)
         if peg < 1:
             verdict = "偏低（可能被低估）"
@@ -311,22 +354,18 @@ class ValuationAnalyzer:
             verdict = "合理"
         else:
             verdict = "偏高（注意估值風險）"
-        return {"peg": peg, "pe": round(current_pe, 2),
-                "eps_growth_rate": round(eps_growth, 2), "verdict": verdict}
+        return {"peg": peg, "pe": round(current_pe, 2), **growth_fields, "verdict": verdict}
 
     def _calc_eps_growth_rate(self) -> Optional[float]:
-        if len(self.eps_sorted) < 4:
+        if len(self.eps_sorted) < 8:
             return None
-        total_eps_last4 = sum(e["eps"] for e in self.eps_sorted[-4:])
-        if len(self.eps_sorted) >= 8:
-            total_eps_prev4 = sum(e["eps"] for e in self.eps_sorted[-8:-4])
-            if total_eps_prev4 > 0:
-                return (total_eps_last4 / total_eps_prev4) - 1
-        if len(self.eps_sorted) >= 4:
-            older4 = self.eps_sorted[-8:-4] if len(self.eps_sorted) >= 8 else self.eps_sorted[:4]
-            total_older = sum(e["eps"] for e in older4)
-            if total_older > 0:
-                return (total_eps_last4 / total_older) - 1
+        window = self.eps_sorted[-8:]
+        if not _is_consecutive_quarters(window):
+            return None
+        total_eps_prev4 = sum(float(e["eps"]) for e in window[:4])
+        total_eps_last4 = sum(float(e["eps"]) for e in window[4:])
+        if total_eps_prev4 > 0:
+            return (total_eps_last4 / total_eps_prev4) - 1
         return None
 
     # ═══════════════════════════════════════════
@@ -334,34 +373,44 @@ class ValuationAnalyzer:
     # ═══════════════════════════════════════════
 
     def assess_revenue_growth(self) -> Optional[Dict[str, Any]]:
-        if not self.revenue_data or len(self.revenue_data) < 3:
+        records = sorted(
+            [r for r in self.revenue_data if r.get("year") and r.get("month")],
+            key=lambda r: (int(r["year"]), int(r["month"])),
+        )
+        observations = [r for r in records if r.get("yoy") is not None]
+        if len(observations) < 3:
             return None
 
-        yoy_vals = [r.get("yoy") for r in self.revenue_data if r.get("yoy") is not None]
-        if not yoy_vals:
-            return None
-        yoy_arr = np.array(yoy_vals)
+        yoy_arr = np.array([float(r["yoy"]) for r in observations])
         yoy_sma3 = self._sma(yoy_arr, 3)
         yoy_sma6 = self._sma(yoy_arr, min(6, len(yoy_arr)))
-
-        recent_yoy = yoy_arr[-3:] if len(yoy_arr) >= 3 else yoy_arr
+        recent_yoy = yoy_arr[-3:]
         avg_yoy = float(np.mean(yoy_arr))
         avg_recent_yoy = float(np.mean(recent_yoy))
-        consecutive_positive = self._count_consecutive_positive(yoy_arr)
-        consecutive_negative = self._count_consecutive_negative(yoy_arr)
+
+        streak_values = []
+        previous_ordinal = None
+        for record in reversed(records):
+            ordinal = int(record["year"]) * 12 + int(record["month"])
+            if previous_ordinal is not None and previous_ordinal - ordinal != 1:
+                break
+            if record.get("yoy") is None:
+                break
+            streak_values.append(float(record["yoy"]))
+            previous_ordinal = ordinal
+        consecutive_positive = self._count_consecutive_positive(np.array(list(reversed(streak_values))))
+        consecutive_negative = self._count_consecutive_negative(np.array(list(reversed(streak_values))))
 
         slope = None
         if len(yoy_arr) >= 6:
-            x = np.arange(len(yoy_arr))
-            slope = float(np.polyfit(x, yoy_arr, 1)[0])
+            slope = float(np.polyfit(np.arange(len(yoy_arr)), yoy_arr, 1)[0])
 
         accelerating = False
         decelerating = False
         if len(yoy_sma3) >= 2:
-            if yoy_sma3[-1] > yoy_sma3[-2] * 1.05:
-                accelerating = True
-            elif yoy_sma3[-1] < yoy_sma3[-2] * 0.95:
-                decelerating = True
+            change = yoy_sma3[-1] - yoy_sma3[-2]
+            accelerating = change > 1.0
+            decelerating = change < -1.0
 
         return {
             "avg_yoy_pct": round(avg_yoy, 1),
@@ -417,49 +466,54 @@ class ValuationAnalyzer:
     # ═════════════════════════════════════════════════════════
 
     def calculate_health_score(self) -> Dict[str, Any]:
-        """7 維度健康度評分（0–100）。"""
+        """Return a score only when at least half of the weighted inputs exist."""
         fair = self.get_fair_price_range()
         peg = self.get_peg()
         rev = self.assess_revenue_growth()
-
-        growth_score = self._score_growth(rev, peg)
-        valuation_score = self._score_valuation(fair)
-        profitability_score = self._score_profitability()
-        quality_score = self._score_quality()
-        momentum_score = self._score_momentum()
-        stability_score = self._score_stability()
-        cashflow_score = self._score_cashflow()
-
-        total = (
-            growth_score * 0.22
-            + valuation_score * 0.20
-            + profitability_score * 0.18
-            + quality_score * 0.15
-            + momentum_score * 0.12
-            + stability_score * 0.08
-            + cashflow_score * 0.05
+        has_price_momentum = any(
+            frame is not None and len(frame) >= 2
+            for frame in (
+                self.price_data.get("3m", {}).get("df"),
+                self.price_data.get("6m", {}).get("df"),
+            )
         )
-        total = round(total, 1)
-
-        if total >= 70:
-            level = "良好"
-        elif total >= 45:
-            level = "普通"
-        else:
-            level = "需謹慎"
-
+        definitions = {
+            "growth": (0.22, rev is not None or _safe_get(self.price_info, "earningsGrowth") is not None or peg.get("eps_growth_rate") is not None, self._score_growth(rev, peg)),
+            "valuation": (0.20, fair is not None and (fair.get("current_pe") is not None or _safe_get(self.price_info, "priceToBook") is not None), self._score_valuation(fair)),
+            "profitability": (0.18, any(_safe_get(self.price_info, key) is not None for key in ("returnOnEquity", "profitMargins", "returnOnAssets")), self._score_profitability()),
+            "quality": (0.15, self._calc_piotroski_f_score() is not None or all(_safe_get(self.price_info, key) is not None for key in ("operatingCashflow", "netIncomeToCommon")), self._score_quality()),
+            "momentum": (0.12, has_price_momentum, self._score_momentum()),
+            "stability": (0.08, len(self._price_series) >= 10 or _safe_get(self.price_info, "debtToEquity") is not None, self._score_stability()),
+            "cashflow": (0.05, any(_safe_get(self.price_info, key) is not None for key in ("freeCashflow", "operatingCashflow", "totalCash", "totalDebt")), self._score_cashflow()),
+        }
+        available_weight = sum(weight for weight, available, _ in definitions.values() if available)
+        coverage = round(available_weight, 2)
+        components = {
+            name: {
+                "score": round(score, 1) if available else None,
+                "weight": f"{weight * 100:.0f}%",
+                "status": "available" if available else "unavailable",
+            }
+            for name, (weight, available, score) in definitions.items()
+        }
+        if available_weight < 0.50:
+            return {
+                "total_score": None,
+                "level": "資料不足",
+                "coverage": coverage,
+                "components": components,
+            }
+        total = round(
+            sum(score * weight for weight, available, score in definitions.values() if available)
+            / available_weight,
+            1,
+        )
+        level = "良好" if total >= 70 else "普通" if total >= 45 else "需謹慎"
         return {
             "total_score": total,
             "level": level,
-            "components": {
-                "growth": {"score": round(growth_score, 1), "weight": "22%"},
-                "valuation": {"score": round(valuation_score, 1), "weight": "20%"},
-                "profitability": {"score": round(profitability_score, 1), "weight": "18%"},
-                "quality": {"score": round(quality_score, 1), "weight": "15%"},
-                "momentum": {"score": round(momentum_score, 1), "weight": "12%"},
-                "stability": {"score": round(stability_score, 1), "weight": "8%"},
-                "cashflow": {"score": round(cashflow_score, 1), "weight": "5%"},
-            },
+            "coverage": coverage,
+            "components": components,
         }
 
     def _score_growth(self, rev, peg) -> float:
@@ -535,44 +589,35 @@ class ValuationAnalyzer:
         return _clamp(score, 10, 100)
 
     def _score_profitability(self) -> float:
-        """獲利能力評分：ROE、利潤率、ROA。"""
+        """Profitability score based on comparable ratios, not absolute EPS."""
         score = 50.0
-
-        roe = _safe_get(self.price_info, "returnOnEquity")
-        if roe:
-            score += _clamp(roe * 100 * 1.5, 0, 30)
-
-        pm = _safe_get(self.price_info, "profitMargins")
-        if pm:
-            score += _clamp(pm * 100 * 0.8, 0, 15)
-
-        roa = _safe_get(self.price_info, "returnOnAssets")
-        if roa:
-            score += _clamp(roa * 100 * 1.0, 0, 10)
-
-        eps = _safe_get(self.price_info, "trailingEps")
-        if eps and eps > 0:
-            score += _clamp(eps * 1.5, 0, 10)
-
+        for key, multiplier, cap in (
+            ("returnOnEquity", 1.5, 30),
+            ("profitMargins", 0.8, 15),
+            ("returnOnAssets", 1.0, 10),
+        ):
+            value = _safe_get(self.price_info, key)
+            if value is not None:
+                score += _clamp(value * 100 * multiplier, -cap, cap)
         return _clamp(score, 0, 100)
 
     def _score_quality(self) -> float:
-        """品質力評分：Piotroski F-Score 轉 0–100 + 盈餘品質。"""
+        """Quality proxy with explicit missing-data neutrality."""
         f_score = self._calc_piotroski_f_score()
-        score = 30.0 + f_score * 7.0  # F=0→30, F=5→65, F=9→93
-
-        # 盈餘品質：營運現金流 / 淨利（越高越好）
+        score = (f_score / 9 * 100) if f_score is not None else 50.0
         ocf = _safe_get(self.price_info, "operatingCashflow")
-        ni = _safe_get(self.price_info, "netIncome")
+        ni = _safe_get(self.price_info, "netIncomeToCommon")
         if ocf is not None and ni is not None and ni > 0:
-            ratio = abs(ocf) / abs(ni)
-            if ratio > 1.5:
-                score += 8
-            elif ratio > 1.0:
-                score += 4
-            elif ratio < 0.5:
-                score -= 8
-
+            if ocf <= 0:
+                score -= 15
+            else:
+                ratio = ocf / ni
+                if ratio > 1.5:
+                    score += 8
+                elif ratio > 1.0:
+                    score += 4
+                elif ratio < 0.5:
+                    score -= 8
         return _clamp(score, 0, 100)
 
     def _score_momentum(self) -> float:
@@ -680,75 +725,82 @@ class ValuationAnalyzer:
     #    - 資產周轉率 → revenue / totalAssets 變化
     # ─────────────────────────────────────────────────────────
 
-    def _calc_piotroski_f_score(self) -> int:
-        """計算 Piotroski F-Score (0–9)。因資料限制，部分條件以替代指標近似。"""
-        score = 0
+    def _calc_piotroski_details(self) -> Dict[str, Any]:
+        """Calculate the nine original signals without awarding missing inputs."""
         pi = self.price_info
+        signals: List[Dict[str, Any]] = []
 
-        # ── 獲利能力 (4 項) ──
-        # 1. ROA > 0
+        def add(name: str, values: Tuple[Any, ...], passed: bool) -> None:
+            available = all(value is not None for value in values)
+            signals.append({
+                "name": name,
+                "available": available,
+                "passed": bool(passed) if available else None,
+            })
+
         roa = _safe_get(pi, "returnOnAssets")
-        if roa is not None and roa > 0:
-            score += 1
-
-        # 2. 營運現金流 > 0
+        roa_prev = _safe_get(pi, "lastYearReturnOnAssets")
         ocf = _safe_get(pi, "operatingCashflow")
-        if ocf is not None and ocf > 0:
-            score += 1
+        net_income = _safe_get(pi, "netIncomeToCommon")
+        add("positive_roa", (roa,), roa is not None and roa > 0)
+        add("positive_operating_cashflow", (ocf,), ocf is not None and ocf > 0)
+        add("improving_roa", (roa, roa_prev), roa is not None and roa_prev is not None and roa > roa_prev)
+        add("cashflow_exceeds_net_income", (ocf, net_income), ocf is not None and net_income is not None and ocf > net_income)
 
-        # 3. ROA 變化 > 0 (較去年改善)
-        roa_change = _safe_get(pi, "returnOnAssets", 0) - _safe_get(pi, "lastYearReturnOnAssets", 0)
-        if roa_change > 0:
-            score += 1
-
-        # 4. 營運現金流 > 淨利 (盈餘品質)
-        ni = _safe_get(pi, "netIncomeToCommon")
-        if ocf is not None and ni is not None and ni > 0:
-            if ocf > ni:
-                score += 1
-
-        # ── 財務結構 (3 項) ──
-        # 5. 長期負債比變化 < 0 (槓桿降低)
-        dte = _safe_get(pi, "debtToEquity", 0)
-        dte_prev = _safe_get(pi, "lastYearDebtToEquity", dte)
-        if dte < dte_prev:
-            score += 1
-
-        # 6. 現金/負債比改善 (流動性替代)
-        cash = _safe_get(pi, "totalCash", 0)
-        debt = _safe_get(pi, "totalDebt", 1) or 1
-        cash_ratio = cash / debt
-        # 無歷史資料時假設有改善
-        if cash > 0:
-            score += 1
-
-        # 7. 無增發 (shares 無增加)
-        shares = _safe_get(pi, "sharesOutstanding")
-        shares_prev = _safe_get(pi, "lastYearSharesOutstanding", shares)
-        if shares is not None and shares_prev is not None:
-            if shares <= shares_prev * 1.02:  # 容許 2% 誤差
-                score += 1
-        else:
-            # 無資料時中性處理 (不扣分也不加分)
-            pass
-
-        # ── 營運效率 (2 項) ──
-        # 8. 毛利率改善
-        gm = _safe_get(pi, "grossMargins", 0)
-        gm_prev = _safe_get(pi, "lastYearGrossMargins", gm)
-        if gm > gm_prev:
-            score += 1
-
-        # 9. 資產周轉率改善 (營收/總資產)
-        rev = _safe_get(pi, "totalRevenue")
+        debt = _safe_get(pi, "totalDebt")
         assets = _safe_get(pi, "totalAssets")
-        if rev is not None and assets is not None and assets > 0:
-            turnover = rev / assets
-            turnover_prev = _safe_get(pi, "lastYearTotalRevenue", 0) / _safe_get(pi, "lastYearTotalAssets", 1)
-            if turnover > turnover_prev or turnover_prev <= 0:
-                score += 1
+        debt_prev = _safe_get(pi, "lastYearTotalDebt")
+        assets_prev = _safe_get(pi, "lastYearTotalAssets")
+        add(
+            "lower_leverage",
+            (debt, assets, debt_prev, assets_prev),
+            all(value is not None and value > 0 for value in (assets, assets_prev))
+            and debt is not None and debt_prev is not None
+            and debt / assets < debt_prev / assets_prev,
+        )
 
-        return min(score, 9)
+        current_assets = _safe_get(pi, "currentAssets")
+        current_liabilities = _safe_get(pi, "currentLiabilities")
+        current_assets_prev = _safe_get(pi, "lastYearCurrentAssets")
+        current_liabilities_prev = _safe_get(pi, "lastYearCurrentLiabilities")
+        add(
+            "improving_current_ratio",
+            (current_assets, current_liabilities, current_assets_prev, current_liabilities_prev),
+            all(value is not None and value > 0 for value in (current_liabilities, current_liabilities_prev))
+            and current_assets is not None and current_assets_prev is not None
+            and current_assets / current_liabilities > current_assets_prev / current_liabilities_prev,
+        )
+
+        shares = _safe_get(pi, "sharesOutstanding")
+        shares_prev = _safe_get(pi, "lastYearSharesOutstanding")
+        add("no_new_shares", (shares, shares_prev), shares is not None and shares_prev is not None and shares <= shares_prev * 1.02)
+
+        gross_margin = _safe_get(pi, "grossMargins")
+        gross_margin_prev = _safe_get(pi, "lastYearGrossMargins")
+        add("improving_gross_margin", (gross_margin, gross_margin_prev), gross_margin is not None and gross_margin_prev is not None and gross_margin > gross_margin_prev)
+
+        revenue = _safe_get(pi, "totalRevenue")
+        revenue_prev = _safe_get(pi, "lastYearTotalRevenue")
+        add(
+            "improving_asset_turnover",
+            (revenue, assets, revenue_prev, assets_prev),
+            all(value is not None and value > 0 for value in (assets, assets_prev))
+            and revenue is not None and revenue_prev is not None
+            and revenue / assets > revenue_prev / assets_prev,
+        )
+
+        available_count = sum(1 for signal in signals if signal["available"])
+        passed_count = sum(1 for signal in signals if signal["passed"] is True)
+        return {
+            "score": passed_count if available_count == 9 else None,
+            "available_count": available_count,
+            "coverage": round(available_count / 9, 2),
+            "signals": signals,
+            "status": "available" if available_count == 9 else "insufficient_data",
+        }
+
+    def _calc_piotroski_f_score(self) -> Optional[int]:
+        return self._calc_piotroski_details()["score"]
 
     # ═════════════════════════════════════════════════════════
     # 模組 5c：Altman Z-Score（破產風險預測）
@@ -772,54 +824,50 @@ class ValuationAnalyzer:
 
     @property
     def _is_financial(self) -> bool:
-        # price_info（yfinance info dict）通常有較完整的 sector/industry
         sector = (_safe_get(self.stock_info, "sector", "")
                   or _safe_get(self.price_info, "sector", ""))
         industry = (_safe_get(self.stock_info, "industry", "")
                     or _safe_get(self.price_info, "industry", ""))
-        fin_keywords = ["financial", "bank", "insurance", "asset management", "investment"]
-        for kw in fin_keywords:
-            if kw in sector.lower() or kw in industry.lower():
-                return True
-        return False
+        value = f"{sector} {industry}".lower()
+        keywords = (
+            "financial", "bank", "insurance", "asset management", "investment",
+            "金融", "銀行", "保險", "證券", "金控", "投信",
+        )
+        return any(keyword in value for keyword in keywords)
 
     def _calc_altman_z_score(self) -> Optional[float]:
-        if self._is_financial:
+        """Original public-manufacturer Altman model; incomplete inputs are unavailable."""
+        if self._is_financial or self.is_etf:
             return None
         pi = self.price_info
-        assets = _safe_get(pi, "totalAssets")
-        if not assets or assets <= 0:
+        fields = (
+            "totalAssets", "currentAssets", "currentLiabilities", "retainedEarnings",
+            "ebit", "marketCap", "totalLiabilities", "totalRevenue",
+        )
+        values = {field: _safe_get(pi, field) for field in fields}
+        if any(value is None for value in values.values()):
+            return None
+        if values["totalAssets"] <= 0 or values["totalLiabilities"] <= 0:
             return None
 
-        # A: 營運資金 / 總資產
-        current_assets = _safe_get(pi, "currentAssets", 0)
-        current_liab = _safe_get(pi, "currentLiabilities", 0)
-        working_capital = current_assets - current_liab
-        A = working_capital / assets
+        assets = values["totalAssets"]
+        a_ratio = (values["currentAssets"] - values["currentLiabilities"]) / assets
+        b_ratio = values["retainedEarnings"] / assets
+        c_ratio = values["ebit"] / assets
+        d_ratio = values["marketCap"] / values["totalLiabilities"]
+        e_ratio = values["totalRevenue"] / assets
+        score = 1.2 * a_ratio + 1.4 * b_ratio + 3.3 * c_ratio + 0.6 * d_ratio + e_ratio
+        return round(score, 3)
 
-        # B: 保留盈餘 / 總資產 (無直接資料，用淨利潤替代部分)
-        retained = _safe_get(pi, "retainedEarnings", 0)
-        B = retained / assets
-
-        # C: EBIT / 總資產 (用 operatingIncome 近似)
-        ebit = _safe_get(pi, "operatingIncome", 0)
-        C = ebit / assets
-
-        # D: 市值 / 總負債 (使用 totalLiabilities 而非 totalDebt，更符合 Altman 原始定義)
-        mcap = _safe_get(pi, "marketCap")
-        total_liab = _safe_get(pi, "totalLiabilities")
-        if total_liab and total_liab > 0:
-            D = (mcap / total_liab) if mcap else 0
-        else:
-            debt = _safe_get(pi, "totalDebt", 1) or 1
-            D = (mcap / debt) if mcap else 0
-
-        # E: 營收 / 總資產
-        rev = _safe_get(pi, "totalRevenue", 0)
-        E = rev / assets
-
-        Z = 1.2 * A + 1.4 * B + 3.3 * C + 0.6 * D + 1.0 * E
-        return round(Z, 3)
+    @staticmethod
+    def _altman_status(score: Optional[float]) -> str:
+        if score is None:
+            return "unavailable"
+        if score < 1.81:
+            return "distress"
+        if score < 2.99:
+            return "grey"
+        return "safe"
 
     # ═════════════════════════════════════════════════════════
     # 模組 5d：Graham Number（葛拉漢數字）
@@ -843,7 +891,7 @@ class ValuationAnalyzer:
     # ═════════════════════════════════════════════════════════
     #
     # 此評級移到後端計算，消除前端與後端的雙重計分問題。
-    # 公式：加權 [健康度 60% + 品質 25% + 安全邊際 15%]
+    # 公式：加權 [健康度 40% + 品質 20% + 安全邊際 25% + Graham 15%]
     # ─────────────────────────────────────────────────────────
 
     def _quality_z_score(self, z: Optional[float]) -> float:
@@ -854,34 +902,32 @@ class ValuationAnalyzer:
         return _clamp(z_capped * 10.0, 0, 100)
 
     def calculate_overall_rating(self) -> Dict[str, Any]:
+        """Combine only available macro components; never substitute neutral scores."""
         health = self.calculate_health_score()
-        f_score = self._calc_piotroski_f_score()
-        z_score = self._calc_altman_z_score()
+        piotroski_details = self._calc_piotroski_details()
+        f_score = piotroski_details["score"]
         graham = self._calc_graham_number()
         mos = self.get_margin_of_safety()
 
-        quality_raw = 30.0 + f_score * 7.0
-        if z_score is not None:
-            quality_z = self._quality_z_score(z_score) * 0.15
-            quality_raw = _clamp(quality_raw + quality_z, 0, 100)
+        health_score = health.get("total_score")
+        quality_score = self._score_quality() if f_score is not None else None
 
-        safety_score = 50.0
-        if mos:
-            mos_pct = mos.get("margin_of_safety_pct")
-            if mos_pct is not None:
-                if mos_pct > 30:
-                    safety_score = 95
-                elif mos_pct > 15:
-                    safety_score = 80
-                elif mos_pct > 0:
-                    safety_score = 65
-                elif mos_pct > -20:
-                    safety_score = max(30, 50 + mos_pct * 1.0)
-                else:
-                    safety_score = max(10, 50 + mos_pct * 0.5)
+        safety_score = None
+        mos_pct = mos.get("margin_of_safety_pct") if mos else None
+        if mos_pct is not None:
+            if mos_pct > 30:
+                safety_score = 95
+            elif mos_pct > 15:
+                safety_score = 80
+            elif mos_pct > 0:
+                safety_score = 65
+            elif mos_pct > -20:
+                safety_score = max(30, 50 + mos_pct)
+            else:
+                safety_score = max(10, 50 + mos_pct * 0.5)
 
-        graham_score = 50.0
-        if graham and self.current_price > 0:
+        graham_score = None
+        if graham is not None and self.current_price > 0:
             discount = (graham - self.current_price) / graham * 100
             if discount > 30:
                 graham_score = 90
@@ -894,38 +940,77 @@ class ValuationAnalyzer:
             else:
                 graham_score = max(10, 50 + discount * 0.5)
 
-        total = (
-            health["total_score"] * 0.40
-            + quality_raw * 0.20
-            + safety_score * 0.25
-            + graham_score * 0.15
+        definitions = {
+            "health_score": (0.40, health_score),
+            "quality": (0.20, quality_score),
+            "safety": (0.25, safety_score),
+            "graham": (0.15, graham_score),
+        }
+        available_weight = sum(
+            weight for weight, component_score in definitions.values()
+            if component_score is not None
         )
+        effective_coverage = (
+            0.40 * health.get("coverage", 0) if health_score is not None else 0
+        )
+        effective_coverage += 0.20 if quality_score is not None else 0
+        effective_coverage += 0.25 if safety_score is not None else 0
+        effective_coverage += 0.15 if graham_score is not None else 0
+        effective_coverage = round(effective_coverage, 2)
 
+        components = {
+            "health_score": {
+                "score": health_score,
+                "weight": "40%",
+                "status": "available" if health_score is not None else "unavailable",
+            },
+            "quality": {
+                "score": round(quality_score, 1) if quality_score is not None else None,
+                "weight": "20%",
+                "status": "available" if quality_score is not None else "unavailable",
+                "piotroski_f_score": f_score,
+                "piotroski_coverage": piotroski_details["coverage"],
+            },
+            "safety": {
+                "score": round(safety_score, 1) if safety_score is not None else None,
+                "weight": "25%",
+                "status": "available" if safety_score is not None else "unavailable",
+            },
+            "graham": {
+                "score": round(graham_score, 1) if graham_score is not None else None,
+                "weight": "15%",
+                "status": "available" if graham_score is not None else "unavailable",
+                "graham_number": graham,
+            },
+        }
+        if effective_coverage < 0.50 or available_weight <= 0:
+            return {
+                "score": None,
+                "rating": "N/A",
+                "color": "#64748b",
+                "coverage": effective_coverage,
+                "components": components,
+            }
+
+        total = sum(
+            component_score * weight
+            for weight, component_score in definitions.values()
+            if component_score is not None
+        ) / available_weight
         if total >= 80:
-            rating = "A"
-            color = "#10b981"
+            rating, color = "A", "#10b981"
         elif total >= 60:
-            rating = "B"
-            color = "#6366f1"
+            rating, color = "B", "#2563a6"
         elif total >= 40:
-            rating = "C"
-            color = "#f59e0b"
+            rating, color = "C", "#f59e0b"
         else:
-            rating = "D"
-            color = "#ef4444"
-
+            rating, color = "D", "#ef4444"
         return {
             "score": round(total, 1),
             "rating": rating,
             "color": color,
-            "components": {
-                "health_score": {"score": health["total_score"], "weight": "40%"},
-                "quality": {"score": round(quality_raw, 1), "weight": "20%",
-                            "piotroski_f_score": f_score},
-                "safety": {"score": round(safety_score, 1), "weight": "25%"},
-                "graham": {"score": round(graham_score, 1), "weight": "15%",
-                           "graham_number": graham},
-            },
+            "coverage": effective_coverage,
+            "components": components,
         }
 
     # ═══════════════════════════════════════════
@@ -993,19 +1078,19 @@ class ValuationAnalyzer:
                              "msg": f"近四季 EPS 較前四季衰退 {abs(eps_growth)*100:.0f}%"})
 
         # ── Piotroski 低分（品質風險）──
-        if f_score <= 3:
-            warnings.append({"type": "財務品質", "level": "yellow", "horizon": "long",
-                             "msg": f"Piotroski F-Score 僅 {f_score}/9，財務基本面偏弱"})
-        elif f_score <= 2:
+        if f_score is not None and f_score <= 2:
             warnings.append({"type": "財務品質", "level": "red", "horizon": "long",
                              "msg": f"Piotroski F-Score 僅 {f_score}/9，財務體質需警惕"})
+        elif f_score is not None and f_score <= 3:
+            warnings.append({"type": "財務品質", "level": "yellow", "horizon": "long",
+                             "msg": f"Piotroski F-Score 僅 {f_score}/9，財務基本面偏弱"})
 
         # ── Altman Z-Score（破產風險）──
         if z_score is not None:
-            if z_score < 1.1:
+            if z_score < 1.81:
                 warnings.append({"type": "財務壓力", "level": "red", "horizon": "long",
                                  "msg": f"Altman Z-Score {z_score}，財務結構需警惕"})
-            elif z_score < 2.5:
+            elif z_score < 2.99:
                 warnings.append({"type": "財務壓力", "level": "yellow", "horizon": "long",
                                  "msg": f"Altman Z-Score {z_score}，財務結構處於灰色地帶"})
             else:
@@ -1035,7 +1120,7 @@ class ValuationAnalyzer:
                                  "msg": "ROA 較去年同期顯著下滑"})
 
         # ── 健康度總評警示 ──
-        if health["total_score"] < 45:
+        if health["total_score"] is not None and health["total_score"] < 45:
             warnings.append({"type": "綜合健康度", "level": "red", "horizon": "mid",
                              "msg": f"綜合健康度僅 {health['total_score']} 分，整體表現偏弱"})
 
@@ -1060,11 +1145,21 @@ class ValuationAnalyzer:
 
         # 整體評級
         lines.append(f"【{name} 估值分析】")
-        lines.append(f"綜合評級：{rating['rating']}（{rating['score']} 分）")
-        lines.append(f"健康評分：{score['total_score']} 分（{score['level']}）")
+        if rating.get("score") is None:
+            lines.append(f"綜合評級：資料不足（覆蓋率 {rating.get('coverage', 0) * 100:.0f}%）")
+        else:
+            lines.append(f"綜合評級：{rating['rating']}（{rating['score']} 分）")
+        if score.get("total_score") is None:
+            lines.append(f"健康評分：資料不足（覆蓋率 {score.get('coverage', 0) * 100:.0f}%）")
+        else:
+            lines.append(f"健康評分：{score['total_score']} 分（{score['level']}）")
 
         # 新指標摘要
-        lines.append(f"Piotroski F-Score：{f_score}/9")
+        if f_score is not None:
+            lines.append(f"Piotroski F-Score：{f_score}/9")
+        else:
+            coverage = self._calc_piotroski_details()["available_count"]
+            lines.append(f"Piotroski F-Score：資料不足（9 項中 {coverage} 項可計算）")
         if graham:
             if self.current_price < graham:
                 lines.append(f"Graham Number：{graham} 元（目前股價低於葛拉漢數字，價值投資角度具安全邊際）")
@@ -1217,43 +1312,61 @@ class ValuationAnalyzer:
             else:
                 scores["yield"] = {"score": 30, "weight": "15%"}
 
-        total = 0.0
-        total_w = 0.0
-        for k, v in scores.items():
-            w = float(v["weight"].rstrip("%")) / 100
-            total += v["score"] * w
-            total_w += w
-
-        avg = round(total / total_w, 1) if total_w > 0 else 50.0
-
-        if avg >= 70:
-            level = "良好"
-        elif avg >= 45:
-            level = "普通"
-        else:
-            level = "需謹慎"
-
-        return {"total_score": avg, "level": level, "components": scores}
+        weighted_total = 0.0
+        available_weight = 0.0
+        for component in scores.values():
+            weight = float(component["weight"].rstrip("%")) / 100
+            weighted_total += component["score"] * weight
+            available_weight += weight
+        coverage = round(available_weight, 2)
+        if available_weight < 0.50:
+            return {
+                "total_score": None,
+                "level": "資料不足",
+                "coverage": coverage,
+                "components": scores,
+            }
+        average = round(weighted_total / available_weight, 1)
+        level = "良好" if average >= 70 else "普通" if average >= 45 else "需謹慎"
+        return {
+            "total_score": average,
+            "level": level,
+            "coverage": coverage,
+            "components": scores,
+        }
 
     def _calculate_etf_rating(self) -> Dict[str, Any]:
         """ETF 綜合評級 (A/B/C/D)。"""
         hs = self._calculate_etf_health_score()
         total = hs["total_score"]
 
+        if total is None:
+            return {
+                "score": None,
+                "rating": "N/A",
+                "color": "#64748b",
+                "coverage": hs.get("coverage", 0),
+                "components": hs.get("components"),
+            }
         if total >= 80:
             rating = "A"
             color = "#10b981"
         elif total >= 60:
             rating = "B"
-            color = "#6366f1"
+            color = "#2563eb"
         elif total >= 40:
             rating = "C"
             color = "#f59e0b"
         else:
             rating = "D"
             color = "#ef4444"
-
-        return {"score": total, "rating": rating, "color": color, "components": hs.get("components")}
+        return {
+            "score": total,
+            "rating": rating,
+            "color": color,
+            "coverage": hs.get("coverage", 0),
+            "components": hs.get("components"),
+        }
 
     def _calculate_etf_risk_warnings(self) -> List[Dict[str, Any]]:
         """ETF 專屬風險預警。"""
@@ -1308,7 +1421,7 @@ class ValuationAnalyzer:
 
         aum = _safe_get(pi, "totalAssets")
         if aum is not None:
-            aum_str = f"{aum/1e8:.0f} 億" if aum < 1e11 else f"{aum/1e11:.1f} 百億"
+            aum_str = f"{aum/1e8:,.0f} 億元"
             parts.append(f"基金規模 {aum_str}")
 
         div_yield = _safe_get(pi, "yield")
@@ -1350,7 +1463,9 @@ class ValuationAnalyzer:
             "overall_rating": self.calculate_overall_rating(),
             "quality_score": {
                 "piotroski_f_score": self._calc_piotroski_f_score(),
+                "piotroski_details": self._calc_piotroski_details(),
                 "altman_z_score": self._calc_altman_z_score(),
+                "altman_model": "original_public_manufacturer",
                 "graham_number": self._calc_graham_number(),
             },
             "risk_warnings": self.get_risk_warnings(),

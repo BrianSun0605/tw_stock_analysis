@@ -15,10 +15,13 @@ from config import (
     HEADERS, TIMEOUT, CHART_DIR, CACHE_DIR, MPL_FONT_PATH,
 )
 from utils.cache import cache_get, cache_set
+from stock.yf_errors import YFINANCE_EXCEPTIONS
 from utils.logger import get_logger
 plt.rcParams["axes.unicode_minus"] = False
 
 logger = get_logger(__name__)
+
+ALLOW_HISTOCK_SCRAPING = os.environ.get("TWSTOCK_ALLOW_HISTOCK", "").strip().lower() in {"1", "true", "yes"}
 
 _MPL_FP = None
 try:
@@ -39,6 +42,19 @@ def _suffix(market: Optional[str] = None) -> str:
     return ".TWO" if market == "上櫃" else ".TW"
 
 
+def _yield_as_decimal(value: Any, dividend_rate: Any = None, price: Any = None) -> Optional[float]:
+    """Normalize yfinance's version-dependent yield field to a decimal ratio."""
+    try:
+        if dividend_rate is not None and price is not None and float(price) > 0:
+            return float(dividend_rate) / float(price)
+        if value is None:
+            return None
+        numeric = float(value)
+        return numeric / 100 if abs(numeric) > 0.20 else numeric
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
 def get_price_data(stock_id: str, periods: Optional[Dict[str, int]] = None, market: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if periods is None:
         periods = {"3m": 90, "6m": 180, "1y": 365}
@@ -49,7 +65,7 @@ def get_price_data(stock_id: str, periods: Optional[Dict[str, int]] = None, mark
         info: Dict[str, Any] = {}
         try:
             info = ticker.info or {}
-        except (ValueError, KeyError) as e:
+        except YFINANCE_EXCEPTIONS as e:
             logger.warning("price info fetch warning for %s: %s", ticker_symbol, e)
         for label, days in periods.items():
             end = datetime.now()
@@ -77,7 +93,7 @@ def get_price_data(stock_id: str, periods: Optional[Dict[str, int]] = None, mark
                 "low": {"date": str(low_idx.date()), "price": round(float(df.loc[low_idx, "low"]), 2)},
             }
         return results, info
-    except (requests.RequestException, ValueError, KeyError) as e:
+    except YFINANCE_EXCEPTIONS as e:
         logger.error("price data fetch failed for %s: %s", ticker_symbol, e, exc_info=True)
         return {"3m": {"df": pd.DataFrame(), "chart": None, "charts": {}, "high": None, "low": None},
                 "6m": {"df": pd.DataFrame(), "chart": None, "charts": {}, "high": None, "low": None},
@@ -126,22 +142,20 @@ def _plot_price_chart(df: pd.DataFrame, stock_id: str, label: str, mode: str = "
 
 
 def get_revenue_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    cached = cache_get(stock_id, "revenue", max_age_sec=86400)
+    cached = cache_get(stock_id, "revenue_v3", max_age_sec=86400)
     if cached is not None:
         records = cached
     else:
         records = []
-        try:
-            records = _fetch_revenue_histock(stock_id)
-        except (requests.RequestException, ValueError, IndexError) as e:
-            logger.warning("histock revenue fetch failed for %s: %s", stock_id, e)
-        if not records:
+        if ALLOW_HISTOCK_SCRAPING:
             try:
-                records = _fetch_revenue_yfinance(stock_id, market)
-            except (requests.RequestException, ValueError, KeyError) as e:
-                logger.warning("yfinance revenue fetch failed for %s: %s", stock_id, e)
+                records = _fetch_revenue_histock(stock_id)
+            except (requests.RequestException, ValueError, IndexError) as e:
+                logger.warning("opt-in HiStock revenue fetch failed for %s: %s", stock_id, e)
+        if not records:
+            records = _fetch_revenue_yfinance(stock_id, market)
         if records:
-            cache_set(stock_id, "revenue", records)
+            cache_set(stock_id, "revenue_v3", records)
     records.sort(key=lambda x: (x.get("year", 0), x.get("month", 0)))
     chart_path = _plot_revenue_chart(records, stock_id)
     return records, chart_path
@@ -150,6 +164,7 @@ def get_revenue_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[
 def _fetch_revenue_histock(stock_id: str) -> List[Dict[str, Any]]:
     url = f"https://histock.tw/stock/{stock_id}/%E6%AF%8F%E6%9C%88%E7%87%9F%E6%94%B6"
     resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    resp.raise_for_status()
     resp.encoding = "utf-8"
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(resp.text, "lxml")
@@ -196,6 +211,7 @@ def _fetch_revenue_histock(stock_id: str) -> List[Dict[str, Any]]:
             records.append({
                 "year": year,
                 "month": month,
+                "source": "HiStock HTML (explicit opt-in)",
                 "revenue": revenue,
                 "prev_month_revenue": None,
                 "last_year_revenue": last_year_rev if last_year_rev > 0 else None,
@@ -206,23 +222,8 @@ def _fetch_revenue_histock(stock_id: str) -> List[Dict[str, Any]]:
 
 
 def _fetch_revenue_yfinance(stock_id: str, market: Optional[str] = None) -> List[Dict[str, Any]]:
-    try:
-        ticker = yf.Ticker(f"{stock_id}{_suffix(market)}")
-        info = ticker.info or {}
-        total_rev = info.get("totalRevenue", 0)
-        if total_rev:
-            now = datetime.now()
-            return [{
-                "year": now.year,
-                "month": now.month,
-                "revenue": total_rev / 12,
-                "prev_month_revenue": None,
-                "last_year_revenue": None,
-                "mom": None,
-                "yoy": None,
-            }]
-    except (KeyError, ValueError, requests.RequestException) as e:
-        logger.warning("yfinance revenue parse error for %s: %s", stock_id, e)
+    """Do not convert annual/TTM revenue into fabricated monthly observations."""
+    logger.info("monthly revenue unavailable from yfinance for %s", stock_id)
     return []
 
 
@@ -261,22 +262,23 @@ def _plot_revenue_chart(records: List[Dict[str, Any]], stock_id: str) -> Optiona
 
 
 def get_eps_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    cached = cache_get(stock_id, "eps", max_age_sec=86400)
+    cached = cache_get(stock_id, "eps_v3", max_age_sec=86400)
     if cached is not None:
         records = cached
     else:
         records = []
-        try:
-            records = _fetch_eps_histock(stock_id)
-        except (requests.RequestException, ValueError, IndexError) as e:
-            logger.warning("histock EPS fetch failed for %s: %s", stock_id, e)
+        if ALLOW_HISTOCK_SCRAPING:
+            try:
+                records = _fetch_eps_histock(stock_id)
+            except (requests.RequestException, ValueError, IndexError) as e:
+                logger.warning("opt-in HiStock EPS fetch failed for %s: %s", stock_id, e)
         if not records:
             try:
                 records = _fetch_eps_yfinance(stock_id, market)
-            except (KeyError, ValueError, requests.RequestException) as e:
-                logger.warning("yfinance EPS fetch failed for %s: %s", stock_id, e)
+            except YFINANCE_EXCEPTIONS as e:
+                logger.warning("yfinance quarterly EPS fetch failed for %s: %s", stock_id, e)
         if records:
-            cache_set(stock_id, "eps", records)
+            cache_set(stock_id, "eps_v3", records)
     records.sort(key=lambda x: (x["year"], x["quarter"]))
     chart_path = _plot_eps_chart(records, stock_id)
     return records, chart_path
@@ -285,6 +287,7 @@ def get_eps_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[Dict
 def _fetch_eps_histock(stock_id: str) -> List[Dict[str, Any]]:
     url = f"https://histock.tw/stock/{stock_id}/%E6%AF%8F%E8%82%A1%E7%9B%88%E9%A4%98"
     resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    resp.raise_for_status()
     resp.encoding = "utf-8"
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(resp.text, "lxml")
@@ -317,6 +320,7 @@ def _fetch_eps_histock(stock_id: str) -> List[Dict[str, Any]]:
                             records.append({
                                 "year": year,
                                 "quarter": q_num,
+                                "source": "HiStock HTML (explicit opt-in)",
                                 "eps": eps_val,
                                 "label": f"Q{q_num} {year}",
                             })
@@ -326,22 +330,49 @@ def _fetch_eps_histock(stock_id: str) -> List[Dict[str, Any]]:
 
 
 def _fetch_eps_yfinance(stock_id: str, market: Optional[str] = None) -> List[Dict[str, Any]]:
-    try:
-        ticker = yf.Ticker(f"{stock_id}{_suffix(market)}")
-        info = ticker.info or {}
-        trailing_eps = info.get("trailingEps")
-        if trailing_eps:
-            now = datetime.now()
-            q = (now.month - 1) // 3 + 1
-            return [{
-                "year": now.year,
-                "quarter": q,
-                "eps": trailing_eps,
-                "label": f"TTM {now.year}",
-            }]
-    except (KeyError, ValueError, requests.RequestException) as e:
-        logger.warning("yfinance EPS parse error for %s: %s", stock_id, e)
-    return []
+    """Read genuine quarterly EPS, deriving it only from matching quarter NI/shares."""
+    frame = yf.Ticker(f"{stock_id}{_suffix(market)}").quarterly_income_stmt
+    if frame is None or frame.empty:
+        return []
+
+    eps_rows = [row for row in ("Diluted EPS", "Basic EPS") if row in frame.index]
+    income_rows = [
+        row for row in ("Diluted NI Availto Com Stockholders", "Net Income Common Stockholders")
+        if row in frame.index
+    ]
+    share_rows = [row for row in ("Diluted Average Shares", "Basic Average Shares") if row in frame.index]
+    records: Dict[tuple[int, int], Dict[str, Any]] = {}
+    for column in frame.columns:
+        timestamp = pd.Timestamp(column)
+        year = int(timestamp.year)
+        quarter = (int(timestamp.month) - 1) // 3 + 1
+        value = None
+        for row in eps_rows:
+            candidate = frame.loc[row, column]
+            if pd.notna(candidate):
+                value = float(candidate)
+                break
+        if value is None:
+            net_income = next(
+                (float(frame.loc[row, column]) for row in income_rows if pd.notna(frame.loc[row, column])),
+                None,
+            )
+            shares = next(
+                (float(frame.loc[row, column]) for row in share_rows if pd.notna(frame.loc[row, column])),
+                None,
+            )
+            if net_income is not None and shares is not None and shares > 0:
+                value = net_income / shares
+        if value is None or not pd.notna(value):
+            continue
+        records[(year, quarter)] = {
+            "year": year,
+            "quarter": quarter,
+            "eps": round(float(value), 4),
+            "label": f"Q{quarter} {year}",
+            "source": "Yahoo Finance quarterly_income_stmt",
+        }
+    return sorted(records.values(), key=lambda item: (item["year"], item["quarter"]))
 
 
 def _plot_eps_chart(records: List[Dict[str, Any]], stock_id: str) -> Optional[str]:
@@ -382,9 +413,13 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
         ticker = yf.Ticker(f"{stock_id}{_suffix(mkt)}")
         info = ticker.info or {}
         if "longName" in info and info["longName"]:
-            result["name"] = info["longName"]
+            result["name_en"] = info["longName"]
+            if not result["name"]:
+                result["name"] = info["longName"]
         if "sector" in info and info["sector"]:
-            result["industry"] = info["sector"]
+            result["sector"] = info["sector"]
+            if not result["industry"]:
+                result["industry"] = info["sector"]
         if not result.get("market") and info.get("market"):
             result["market"] = info["market"]
         qt = info.get("quoteType", "")
@@ -418,12 +453,10 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
         if "fullTimeEmployees" in info and info["fullTimeEmployees"]:
             result["employees"] = info["fullTimeEmployees"]
 
-        if "regularMarketChangePercent" in info and info["regularMarketChangePercent"] is not None:
-            result["day_change_pct"] = round(info["regularMarketChangePercent"] * 100, 2)
-        elif "regularMarketChange" in info and info["regularMarketChange"] is not None:
-            pc = info.get("previousClose")
-            if pc and pc > 0:
-                result["day_change_pct"] = round(info["regularMarketChange"] / pc * 100, 2)
+        market_change = info.get("regularMarketChange")
+        previous_close = info.get("previousClose")
+        if market_change is not None and previous_close and previous_close > 0:
+            result["day_change_pct"] = round(float(market_change) / float(previous_close) * 100, 2)
 
         for field in ["grossMargins", "operatingMargins", "profitMargins",
                       "returnOnEquity", "returnOnAssets",
@@ -438,7 +471,16 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
                       "shortRatio", "shortPercentOfFloat",
                       "heldPercentInstitutions"]:
             if field in info and info[field] is not None:
-                result[field] = info[field]
+                if field == "dividendYield":
+                    normalized_yield = _yield_as_decimal(
+                        info[field],
+                        info.get("dividendRate"),
+                        info.get("currentPrice") or info.get("regularMarketPrice"),
+                    )
+                    if normalized_yield is not None:
+                        result[field] = normalized_yield
+                else:
+                    result[field] = info[field]
 
         # ETF-specific fields
         if result["is_etf"]:
@@ -455,8 +497,12 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
             if "averageVolume" in info:
                 result["avg_volume"] = info["averageVolume"]
             if "yield" in info:
-                result["etf_yield"] = info["yield"]
-    except (KeyError, ValueError, requests.RequestException) as e:
+                result["etf_yield"] = _yield_as_decimal(
+                    info["yield"],
+                    info.get("dividendRate"),
+                    info.get("currentPrice") or info.get("regularMarketPrice"),
+                )
+    except YFINANCE_EXCEPTIONS as e:
         logger.warning("basic stock info fetch error for %s: %s", stock_id, e)
     if not result["name"]:
         result["name"] = stock_info.get("name", stock_id)

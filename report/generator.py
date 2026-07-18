@@ -47,6 +47,8 @@ class PDFReport:
                 break
         if FONT_PATH_BOLD and os.path.exists(FONT_PATH_BOLD):
             bold_src = FONT_PATH_BOLD
+        if not regular_src:
+            raise RuntimeError("找不到可用的繁體中文字型，無法安全產生 PDF")
         if regular_src:
             try:
                 self.pdf.add_font(FONT_NAME, "", regular_src)
@@ -62,7 +64,19 @@ class PDFReport:
         if self._font_ok:
             self.pdf.set_font(FONT_NAME, style, size)
         else:
-            self.pdf.set_font("Courier", style, size)
+            raise RuntimeError("中文字型尚未完成註冊")
+
+    def _multi_cell(self, width, height, text, **kwargs):
+        """Render wrapped text and restore the left margin for the next block."""
+        self.pdf.set_x(self.pdf.l_margin)
+        self.pdf.multi_cell(
+            width,
+            height,
+            text,
+            new_x="LMARGIN",
+            new_y="NEXT",
+            **kwargs,
+        )
 
     def generate(self, filename=None):
         if filename is None:
@@ -93,20 +107,30 @@ class PDFReport:
         self.pdf.output(output_path)
         return output_path
 
+    def _data_source_summary(self):
+        sources = ["TWSE／TPEx OpenAPI（公司清單）", "Yahoo Finance（行情與財務）"]
+        record_sources = {
+            record.get("source")
+            for record in [*self.revenue_data, *self.eps_data]
+            if record.get("source")
+        }
+        sources.extend(sorted(record_sources))
+        if (self.news_data or {}).get("items"):
+            sources.append("Google／Bing RSS（新聞索引）")
+        return "、".join(dict.fromkeys(sources))
+
     def _freshness_note(self, text):
         self._font("", 8)
         self.pdf.set_text_color(150, 150, 150)
-        self.pdf.cell(0, 5, f"  資料日期：{text}", ln=True)
+        self.pdf.cell(0, 5, f"  資料日期：{text}", new_x="LMARGIN", new_y="NEXT")
         self.pdf.set_text_color(0, 0, 0)
         self.pdf.ln(2)
 
     @staticmethod
     def _format_aum(aum):
-        if aum > 1e11:
-            return f"{aum/1e11:.2f} 百億"
-        if aum > 1e8:
-            return f"{aum/1e8:.2f} 億"
-        return f"{aum:.2f}"
+        if aum >= 1e8:
+            return f"{aum/1e8:,.1f} 億元"
+        return f"{aum:,.0f} 元"
 
     def _render_table(self, col_widths, items, font_size=9, row_height=7):
         for i, (lab, val) in enumerate(items):
@@ -118,10 +142,10 @@ class PDFReport:
             self.pdf.ln()
 
     def _section_title(self, title):
-        self.pdf.set_fill_color(25, 118, 210)
+        self.pdf.set_fill_color(18, 48, 71)
         self.pdf.set_text_color(255, 255, 255)
         self._font("B", 16)
-        self.pdf.cell(0, 12, title, ln=True, fill=True)
+        self.pdf.cell(0, 12, title, new_x="LMARGIN", new_y="NEXT", fill=True)
         self.pdf.ln(4)
         self.pdf.set_text_color(0, 0, 0)
 
@@ -148,26 +172,31 @@ class PDFReport:
     def _add_title_page(self):
         self.pdf.add_page()
         self.pdf.ln(40)
-        self.pdf.set_text_color(25, 118, 210)
+        self.pdf.set_text_color(18, 48, 71)
         self._font("B", 28)
-        self.pdf.cell(0, 15, "台股投資分析報告", ln=True, align="C")
+        self.pdf.cell(0, 15, "台股投資分析報告", new_x="LMARGIN", new_y="NEXT", align="C")
         self.pdf.ln(8)
         name = self.stock_info.get("name", "")
         stock_id = self.stock_info.get("stock_id", "")
         self.pdf.set_text_color(60, 60, 60)
-        self._font("B", 20)
-        self.pdf.cell(0, 12, f"{name} ({stock_id})", ln=True, align="C")
+        display_name = f"{name} ({stock_id})"
+        self._font("B", 18 if len(display_name) <= 28 else 13)
+        self._multi_cell(0, 10, display_name, align="C")
         self.pdf.ln(15)
         self.pdf.set_text_color(100, 100, 100)
         self._font("", 14)
         report_date = datetime.now().strftime("%Y 年 %m 月 %d 日")
-        self.pdf.cell(0, 10, f"報告產出日期：{report_date}", ln=True, align="C")
+        self.pdf.cell(0, 10, f"報告產出日期：{report_date}", new_x="LMARGIN", new_y="NEXT", align="C")
         self.pdf.ln(8)
-        self.pdf.cell(0, 10, "本報告由系統自動產生，僅供參考", ln=True, align="C")
+        self.pdf.cell(0, 10, "本報告由系統自動產生，僅供參考", new_x="LMARGIN", new_y="NEXT", align="C")
         self.pdf.ln(40)
         self.pdf.set_text_color(150, 150, 150)
         self._font("", 10)
-        self.pdf.cell(0, 8, "資料來源：公開資訊觀測站、證交所、Yahoo Finance 等公開來源", ln=True, align="C")
+        self._multi_cell(
+            0, 6,
+            f"來源：{self._data_source_summary()}",
+            align="C",
+        )
         self.pdf.set_text_color(0, 0, 0)
 
     def _add_basic_info(self):
@@ -231,22 +260,22 @@ class PDFReport:
                 fields.append(("淨利率", f"{pm*100:.1f}%"))
         dy = pi.get("dividendYield") or info.get("dividendYield")
         if dy and not is_etf:
-            fields.append(("殖利率", f"{dy:.2f}%"))
+            fields.append(("殖利率", f"{dy * 100:.2f}%"))
         desc = info.get("description", "")
         if desc and not is_etf:
             self.pdf.ln(3)
             self._font("B", 11)
-            self.pdf.cell(0, 7, "公司簡介", ln=True)
+            self.pdf.cell(0, 7, "公司簡介", new_x="LMARGIN", new_y="NEXT")
             self._font("", 9)
             self.pdf.set_text_color(80, 80, 80)
             desc_short = desc[:500] + "…" if len(desc) > 500 else desc
-            self.pdf.multi_cell(0, 6, desc_short)
+            self._multi_cell(0, 6, desc_short)
             self.pdf.set_text_color(0, 0, 0)
             emp = info.get("employees")
             if emp:
                 self._font("", 8)
                 self.pdf.set_text_color(120, 120, 120)
-                self.pdf.cell(0, 5, f"員工：{emp:,} 人", ln=True)
+                self.pdf.cell(0, 5, f"員工：{emp:,} 人", new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_text_color(0, 0, 0)
         self.pdf.set_fill_color(240, 248, 255)
         for i, (label, value) in enumerate(fields):
@@ -257,7 +286,7 @@ class PDFReport:
             self._font("B", 11)
             self.pdf.cell(40, 10, label, border=0, fill=True)
             self._font("", 11)
-            self.pdf.cell(0, 10, f"  {value}", ln=True, fill=True)
+            self.pdf.cell(0, 10, f"  {value}", new_x="LMARGIN", new_y="NEXT", fill=True)
 
     def _add_price_section(self):
         self.pdf.add_page()
@@ -266,7 +295,7 @@ class PDFReport:
         for period_name in ["3m", "6m", "1y"]:
             labels = {"3m": "近 3 個月", "6m": "近 6 個月", "1y": "近 1 年"}
             self._font("B", 13)
-            self.pdf.cell(0, 8, f"{labels.get(period_name, period_name)} 股價走勢", ln=True)
+            self.pdf.cell(0, 8, f"{labels.get(period_name, period_name)} 股價走勢", new_x="LMARGIN", new_y="NEXT")
             data = self.price_data.get(period_name, {})
             chart = data.get("chart")
             high = data.get("high")
@@ -277,16 +306,16 @@ class PDFReport:
                     self.pdf.ln(2)
                 except (RuntimeError, FileNotFoundError) as e:
                     logger.warning("price chart image load failed: %s", e)
-                    self.pdf.cell(0, 6, "（圖表載入失敗）", ln=True)
+                    self.pdf.cell(0, 6, "（圖表載入失敗）", new_x="LMARGIN", new_y="NEXT")
             if high:
                 self._font("", 10)
                 self.pdf.set_text_color(200, 0, 0)
-                self.pdf.cell(0, 6, f"  期間最高：{high['price']} 元 ({high['date']})", ln=True)
+                self.pdf.cell(0, 6, f"  期間最高：{high['price']} 元 ({high['date']})", new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_text_color(0, 0, 0)
             if low:
                 self._font("", 10)
                 self.pdf.set_text_color(0, 128, 0)
-                self.pdf.cell(0, 6, f"  期間最低：{low['price']} 元 ({low['date']})", ln=True)
+                self.pdf.cell(0, 6, f"  期間最低：{low['price']} 元 ({low['date']})", new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_text_color(0, 0, 0)
             self.pdf.ln(4)
         df_1y = self.price_data.get("1y", {}).get("df")
@@ -302,7 +331,7 @@ class PDFReport:
                 self.pdf.ln(2)
                 self._font("", 9)
                 self.pdf.set_text_color(80, 80, 80)
-                self.pdf.cell(0, 6, "  目前股價 " + " ｜ ".join(parts), ln=True)
+                self.pdf.cell(0, 6, "  目前股價 " + " ｜ ".join(parts), new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_text_color(0, 0, 0)
 
     def _add_revenue_section(self):
@@ -319,7 +348,7 @@ class PDFReport:
             try:
                 recent = self.revenue_data[-6:] if len(self.revenue_data) > 6 else self.revenue_data
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "近幾期營收概況：", ln=True)
+                self.pdf.cell(0, 7, "近幾期營收概況：", new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_fill_color(240, 245, 250)
                 col_w = [20, 25, 28, 22, 22]
                 headers = ["年月", "營收(億)", "月增率", "年增率", "年增額"]
@@ -372,10 +401,10 @@ class PDFReport:
                 if rg:
                     trend_parts.append(f"年度營收成長率約 {rg*100:.1f}%。")
                 trend = " ".join(trend_parts)
-                self.pdf.multi_cell(0, 7, trend)
+                self._multi_cell(0, 7, trend)
         else:
             self._font("", 11)
-            self.pdf.cell(0, 8, "暫無營收資料，請至公開資訊觀測站查詢。", ln=True)
+            self.pdf.cell(0, 8, "暫無營收資料，請至公開資訊觀測站查詢。", new_x="LMARGIN", new_y="NEXT")
 
     def _add_eps_section(self):
         self.pdf.add_page()
@@ -419,23 +448,24 @@ class PDFReport:
                     avg_eps = sum(recent_eps) / len(recent_eps)
                     trend_text += f" 近{len(recent_eps)}季平均 EPS 為 {avg_eps:.2f} 元。"
                     self._font("", 10)
-                    self.pdf.multi_cell(0, 7, trend_text)
+                    self._multi_cell(0, 7, trend_text)
                 annual_eps = {}
-                for r in self.eps_data:
-                    y = r["year"]
-                    if y not in annual_eps:
-                        annual_eps[y] = 0
-                    annual_eps[y] += r["eps"]
+                for record in self.eps_data:
+                    annual_eps.setdefault(record["year"], []).append(record)
                 if annual_eps:
                     self.pdf.ln(2)
                     self._font("B", 10)
-                    self.pdf.cell(0, 7, "年度 EPS 總和：", ln=True)
+                    self.pdf.cell(0, 7, "各年度／年初至今 EPS：", new_x="LMARGIN", new_y="NEXT")
                     self._font("", 9)
-                    for y in sorted(annual_eps.keys(), reverse=True)[:5]:
-                        self.pdf.cell(0, 6, f"  {y} 年：{annual_eps[y]:.2f} 元", ln=True)
+                    for year in sorted(annual_eps.keys(), reverse=True)[:5]:
+                        records = annual_eps[year]
+                        total = sum(record["eps"] for record in records)
+                        quarters = sorted({record.get("quarter") for record in records if record.get("quarter")})
+                        label = "完整年度" if quarters == [1, 2, 3, 4] else f"YTD 截至 Q{max(quarters)}" if quarters else "資料不完整"
+                        self.pdf.cell(0, 6, f"  {year} 年（{label}）：{total:.2f} 元", new_x="LMARGIN", new_y="NEXT")
         else:
             self._font("", 11)
-            self.pdf.cell(0, 8, "暫無 EPS 資料，請至公開資訊觀測站查詢。", ln=True)
+            self.pdf.cell(0, 8, "暫無 EPS 資料，請至公開資訊觀測站查詢。", new_x="LMARGIN", new_y="NEXT")
 
     def _add_valuation_section(self):
         va = self.valuation_analysis
@@ -446,17 +476,24 @@ class PDFReport:
             self._section_title("估值分析")
             if va.get("is_etf"):
                 self._font("B", 12)
-                self.pdf.cell(0, 8, "ETF 評估指標", ln=True)
+                self.pdf.cell(0, 8, "ETF 評估指標", new_x="LMARGIN", new_y="NEXT")
                 self.pdf.ln(2)
 
                 # Overall ETF rating from backend
                 orating = va.get("overall_rating", {}) or {}
                 if orating.get("rating"):
-                    or_colors = {"A": (16, 185, 129), "B": (99, 102, 241), "C": (245, 158, 11), "D": (239, 68, 68)}
+                    or_colors = {"A": (16, 125, 92), "B": (37, 99, 155), "C": (194, 126, 23), "D": (190, 55, 55), "N/A": (100, 116, 139)}
                     ocolor = or_colors.get(orating.get("rating", "B"), (0, 0, 0))
                     self._font("B", 16)
                     self.pdf.set_text_color(*ocolor)
-                    self.pdf.cell(0, 10, f"  綜合評級：{orating['rating']}（{orating['score']} 分）", ln=True)
+                    self.pdf.cell(
+                    0,
+                    10,
+                    f"  綜合評級：{orating['rating']}（{orating['score']} 分）"
+                    if orating.get("score") is not None
+                    else "  綜合評級：資料不足，暫不提供字母評級",
+                    new_x="LMARGIN", new_y="NEXT",
+                )
                     self.pdf.set_text_color(0, 0, 0)
                     self.pdf.ln(2)
 
@@ -483,7 +520,7 @@ class PDFReport:
                     items.append(("日均成交量", f"{info['avg_volume']:,.0f} 股"))
                 dy = info.get("etf_yield") or info.get("dividendYield")
                 if dy:
-                    items.append(("殖利率", f"{dy:.2f}%"))
+                    items.append(("殖利率", f"{dy * 100:.2f}%"))
                 self._render_table(col_w, items)
                 self.pdf.set_text_color(0, 0, 0)
                 return
@@ -497,7 +534,7 @@ class PDFReport:
             col_w_2 = [60, 50]
             if fp:
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "合理價區間", ln=True)
+                self.pdf.cell(0, 7, "合理價區間", new_x="LMARGIN", new_y="NEXT")
                 self.pdf.ln(2)
                 self.pdf.set_fill_color(240, 245, 250)
                 items = [
@@ -523,26 +560,33 @@ class PDFReport:
                 self._font("", 8)
                 self.pdf.set_text_color(100, 100, 100)
                 self.pdf.cell(0, 5,
-                    f"PE 區間：P25={fp.get('pe_p25','')}  P50={fp.get('pe_p50','')}  "
-                    f"P75={fp.get('pe_p75','')}  均值={fp.get('pe_mean','')}",
-                    ln=True)
+                    f"歷史 PE：P25={fp.get('pe_p25','')}  P50={fp.get('pe_p50','')}  "
+                    f"P75={fp.get('pe_p75','')}  樣本={fp.get('sample_size', 0)} 日",
+                    new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_text_color(0, 0, 0)
                 self._font("B", 8)
                 self.pdf.set_text_color(180, 100, 50)
                 self.pdf.cell(0, 6,
-                    "※ 此處價格計算公式納入 EPS 成長率進行計算調整，含預測性質，僅供參考",
-                    ln=True)
+                    "※ 價格區間為歷史 PE 情境，另含成長率啟發式調整；未經回測校準，不是預測目標價。",
+                    new_x="LMARGIN", new_y="NEXT")
                 self.pdf.set_text_color(0, 0, 0)
 
             # — Overall Rating —
             orating = va.get("overall_rating", {}) or {}
             if orating.get("rating"):
                 self.pdf.ln(2)
-                or_colors = {"A": (16, 185, 129), "B": (99, 102, 241), "C": (245, 158, 11), "D": (239, 68, 68)}
+                or_colors = {"A": (16, 125, 92), "B": (37, 99, 155), "C": (194, 126, 23), "D": (190, 55, 55), "N/A": (100, 116, 139)}
                 ocolor = or_colors.get(orating.get("rating", "B"), (0, 0, 0))
                 self._font("B", 16)
                 self.pdf.set_text_color(*ocolor)
-                self.pdf.cell(0, 10, f"  綜合評級：{orating['rating']}（{orating['score']} 分）", ln=True)
+                self.pdf.cell(
+                    0,
+                    10,
+                    f"  綜合評級：{orating['rating']}（{orating['score']} 分）"
+                    if orating.get("score") is not None
+                    else "  綜合評級：資料不足，暫不提供字母評級",
+                    new_x="LMARGIN", new_y="NEXT",
+                )
                 self.pdf.set_text_color(0, 0, 0)
                 comps = orating.get("components", {}) or {}
                 if comps:
@@ -554,33 +598,33 @@ class PDFReport:
                         if isinstance(v, dict):
                             parts.append(f"{k}: {v.get('score','?')}")
                     if parts:
-                        self.pdf.cell(0, 5, "  " + "  |  ".join(parts), ln=True)
+                        self.pdf.cell(0, 5, "  " + "  |  ".join(parts), new_x="LMARGIN", new_y="NEXT")
                     self.pdf.set_text_color(0, 0, 0)
 
             if peg:
                 self.pdf.ln(3)
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "PEG 分析", ln=True)
+                self.pdf.cell(0, 7, "PEG 分析", new_x="LMARGIN", new_y="NEXT")
                 self._font("", 10)
                 if peg.get("peg") is not None:
                     color_map = {"偏低": (0, 128, 0), "合理": (0, 0, 0), "偏高": (200, 0, 0)}
                     v_color = next((c for k, c in color_map.items() if k in str(peg.get("verdict", ""))), (0, 0, 0))
                     self.pdf.set_text_color(*v_color)
                     self.pdf.cell(0, 7,
-                        f"PEG = {peg['peg']}（{peg['verdict']}）", ln=True)
+                        f"PEG = {peg['peg']}（{peg['verdict']}）", new_x="LMARGIN", new_y="NEXT")
                     self.pdf.set_text_color(0, 0, 0)
                     self._font("", 9)
-                    self.pdf.cell(0, 6, f"  本益比 {peg['pe']} ／ EPS 成長率 {peg['eps_growth_rate']}%", ln=True)
+                    self.pdf.cell(0, 6, f"  本益比 {peg['pe']} ／ EPS 成長率 {peg.get('eps_growth_pct')}%", new_x="LMARGIN", new_y="NEXT")
                 else:
                     self._font("", 9)
                     self.pdf.set_text_color(100, 100, 100)
-                    self.pdf.cell(0, 6, peg.get("verdict", ""), ln=True)
+                    self.pdf.cell(0, 6, peg.get("verdict", ""), new_x="LMARGIN", new_y="NEXT")
                     self.pdf.set_text_color(0, 0, 0)
 
             if rev:
                 self.pdf.ln(3)
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "營收成長評估", ln=True)
+                self.pdf.cell(0, 7, "營收成長評估", new_x="LMARGIN", new_y="NEXT")
                 self._font("", 9)
                 cpos = rev.get("consecutive_positive_months", 0)
                 cneg = rev.get("consecutive_negative_months", 0)
@@ -596,30 +640,33 @@ class PDFReport:
                 elif rev.get("decelerating"):
                     parts.append("動能放緩 ↓")
                 if parts:
-                    self.pdf.multi_cell(0, 6, "  " + " ／ ".join(parts))
+                    self._multi_cell(0, 6, "  " + " ／ ".join(parts))
                 if rev.get("trend_slope") is not None:
                     self.pdf.set_x(self.pdf.l_margin)
-                    self.pdf.cell(0, 6, f"  成長趨勢斜率：{rev['trend_slope']:.3f}", ln=True)
+                    self.pdf.cell(0, 6, f"  成長趨勢斜率：{rev['trend_slope']:.3f}", new_x="LMARGIN", new_y="NEXT")
 
             # — Quality Score —
             qs = va.get("quality_score", {}) or {}
-            has_qs = qs.get("piotroski_f_score") is not None or qs.get("altman_z_score") is not None
+            has_qs = bool(qs)
             if has_qs:
                 self.pdf.ln(3)
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "多因子品質評分", ln=True)
+                self.pdf.cell(0, 7, "多因子品質評分", new_x="LMARGIN", new_y="NEXT")
                 self._font("", 9)
                 pf = qs.get("piotroski_f_score")
                 if pf is not None:
                     pf_color = (0, 128, 0) if pf >= 7 else ((200, 150, 0) if pf >= 4 else (200, 0, 0))
                     self.pdf.set_text_color(*pf_color)
-                    self.pdf.cell(0, 6, f"  Piotroski F-Score：{pf}/9  （≥7 佳 | 4~6 普通 | ≤3 弱）", ln=True)
+                    self.pdf.cell(0, 6, f"  Piotroski F-Score：{pf}/9  （完整九項資料）", new_x="LMARGIN", new_y="NEXT")
                     self.pdf.set_text_color(0, 0, 0)
+                else:
+                    details = qs.get("piotroski_details", {})
+                    self.pdf.cell(0, 6, f"  Piotroski F-Score：資料不足（可計算 {details.get('available_count', 0)}/9 項）", new_x="LMARGIN", new_y="NEXT")
                 az = qs.get("altman_z_score")
                 if az is not None:
-                    az_color = (0, 128, 0) if az >= 2.5 else ((200, 150, 0) if az >= 1.1 else (200, 0, 0))
+                    az_color = (0, 128, 0) if az >= 2.99 else ((200, 150, 0) if az >= 1.81 else (200, 0, 0))
                     self.pdf.set_text_color(*az_color)
-                    self.pdf.cell(0, 6, f"  Altman Z-Score：{az:.2f}  （≥2.5 安全 | 1.1~2.5 灰色 | <1.1 風險）", ln=True)
+                    self.pdf.cell(0, 6, f"  Altman Z-Score：{az:.2f}  （原始上市製造業模型：>=2.99 安全 | 1.81~2.99 灰色）", new_x="LMARGIN", new_y="NEXT")
                     self.pdf.set_text_color(0, 0, 0)
                 gn = qs.get("graham_number")
                 if gn is not None:
@@ -628,57 +675,63 @@ class PDFReport:
                         ratio = cp / gn
                         gn_color = (0, 128, 0) if ratio <= 1 else ((200, 150, 0) if ratio <= 1.5 else (200, 0, 0))
                         self.pdf.set_text_color(*gn_color)
-                        self.pdf.cell(0, 6, f"  Graham Number：{gn:.1f} 元（股價/GN = {ratio:.2f}）", ln=True)
+                        self.pdf.cell(0, 6, f"  Graham Number：{gn:.1f} 元（股價/GN = {ratio:.2f}）", new_x="LMARGIN", new_y="NEXT")
                         self.pdf.set_text_color(0, 0, 0)
 
             if score:
                 self.pdf.ln(3)
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "健康度評分", ln=True)
+                self.pdf.cell(0, 7, "健康度評分", new_x="LMARGIN", new_y="NEXT")
                 ts = score["total_score"]
                 level = score["level"]
-                if ts >= 70:
+                if ts is None:
+                    self._font("", 9)
+                    self.pdf.cell(0, 7, f"  資料不足（覆蓋權重 {score.get('coverage', 0) * 100:.0f}%）", new_x="LMARGIN", new_y="NEXT")
+                elif ts >= 70:
                     scolor = (0, 128, 0)
                 elif ts >= 45:
                     scolor = (200, 150, 0)
                 else:
                     scolor = (200, 0, 0)
-                self._font("B", 14)
-                self.pdf.set_text_color(*scolor)
-                self.pdf.cell(0, 8, f"  {ts} 分（{level}）", ln=True)
-                self.pdf.set_text_color(0, 0, 0)
-                self._font("", 8)
-                self.pdf.ln(1)
-                self.pdf.set_text_color(130, 130, 130)
-                self.pdf.cell(0, 5, "  對照：70+ 良好 ｜ 45~69 普通 ｜ <45 需謹慎", ln=True)
-                self.pdf.set_text_color(0, 0, 0)
-                self._font("", 8)
-                comps = score.get("components", {})
-                label_w = 25
-                bar_w = 80
-                score_w = 15
-                for cname, cdata in comps.items():
-                    cs = cdata["score"]
-                    cw = cdata["weight"]
-                    label_map = {"growth": "成長性", "valuation": "估值", "profitability": "獲利",
-                                 "quality": "品質力", "momentum": "動能",
-                                 "stability": "穩定", "cashflow": "現金流"}
-                    cn = label_map.get(cname, cname)
-                    cs_color = (0, 128, 0) if cs >= 70 else ((200, 150, 0) if cs >= 45 else (200, 0, 0))
-                    self.pdf.cell(label_w, 5, f"  {cn}", border=0)
-                    x0 = self.pdf.get_x()
-                    fill_w = max(bar_w * cs / 100, 1.5) if cs > 0 else 0
-                    self.pdf.set_fill_color(*cs_color)
-                    self.pdf.rect(x0, self.pdf.get_y(), fill_w, 5, "F")
-                    self.pdf.set_fill_color(255, 255, 255)
-                    self.pdf.set_x(x0 + bar_w)
-                    self.pdf.cell(score_w, 5, f"{cs:.0f}", ln=True, align="R")
+                if ts is not None:
+                    self._font("B", 14)
+                    self.pdf.set_text_color(*scolor)
+                    self.pdf.cell(0, 8, f"  {ts} 分（{level}，資料覆蓋 {score.get('coverage', 0) * 100:.0f}%）", new_x="LMARGIN", new_y="NEXT")
+                    self.pdf.set_text_color(0, 0, 0)
+                    self._font("", 8)
+                    self.pdf.ln(1)
+                    self.pdf.set_text_color(130, 130, 130)
+                    self.pdf.cell(0, 5, "  對照：70+ 良好 ｜ 45~69 普通 ｜ <45 需謹慎", new_x="LMARGIN", new_y="NEXT")
+                    self.pdf.set_text_color(0, 0, 0)
+                    self._font("", 8)
+                    comps = score.get("components", {})
+                    label_w = 25
+                    bar_w = 80
+                    score_w = 15
+                    for cname, cdata in comps.items():
+                        cs = cdata["score"]
+                        if cs is None:
+                            continue
+                        cw = cdata["weight"]
+                        label_map = {"growth": "成長性", "valuation": "估值", "profitability": "獲利",
+                                     "quality": "品質力", "momentum": "動能",
+                                     "stability": "穩定", "cashflow": "現金流"}
+                        cn = label_map.get(cname, cname)
+                        cs_color = (0, 128, 0) if cs >= 70 else ((200, 150, 0) if cs >= 45 else (200, 0, 0))
+                        self.pdf.cell(label_w, 5, f"  {cn}", border=0)
+                        x0 = self.pdf.get_x()
+                        fill_w = max(bar_w * cs / 100, 1.5) if cs > 0 else 0
+                        self.pdf.set_fill_color(*cs_color)
+                        self.pdf.rect(x0, self.pdf.get_y(), fill_w, 5, "F")
+                        self.pdf.set_fill_color(255, 255, 255)
+                        self.pdf.set_x(x0 + bar_w)
+                        self.pdf.cell(score_w, 5, f"{cs:.0f}", new_x="LMARGIN", new_y="NEXT", align="R")
 
             if warnings:
                 self.pdf.ln(3)
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "風險提示", ln=True)
-                for w in warnings[:6]:
+                self.pdf.cell(0, 7, "風險提示", new_x="LMARGIN", new_y="NEXT")
+                for w in warnings:
                     lvl = w["level"]
                     if lvl == "red":
                         wcolor = (200, 0, 0)
@@ -689,19 +742,20 @@ class PDFReport:
                     self._font("", 9)
                     self.pdf.set_text_color(*wcolor)
                     msg = f"  [{lvl.upper()}] {w['msg']}"
-                    self.pdf.cell(0, 6, msg[:120], ln=True)
+                    self._multi_cell(0, 6, msg)
                     self.pdf.set_text_color(0, 0, 0)
 
             if text:
                 self.pdf.ln(3)
                 self._font("B", 11)
-                self.pdf.cell(0, 7, "綜合分析", ln=True)
+                self.pdf.cell(0, 7, "綜合分析", new_x="LMARGIN", new_y="NEXT")
                 self._font("", 9)
                 self.pdf.set_text_color(60, 60, 60)
-                self.pdf.multi_cell(0, 6, text)
+                self._multi_cell(0, 6, text)
                 self.pdf.set_text_color(0, 0, 0)
         except (KeyError, AttributeError) as e:
-            logger.warning("valuation section rendering failed: %s", e)
+            logger.exception("valuation section rendering failed: %s", e)
+            raise
 
     def _add_dividend_section(self):
         dd = self.dividend_data
@@ -715,7 +769,7 @@ class PDFReport:
         ay = dd.get("avg_yield_3y")
 
         self._font("B", 11)
-        self.pdf.cell(0, 7, "歷年每股現金股利", ln=True)
+        self.pdf.cell(0, 7, "歷年每股現金股利", new_x="LMARGIN", new_y="NEXT")
         self.pdf.ln(2)
         col_w = [25, 30]
         self.pdf.set_fill_color(220, 230, 240)
@@ -725,7 +779,8 @@ class PDFReport:
         self.pdf.ln()
         self._font("", 9)
         for r in hist[:6]:
-            self.pdf.cell(col_w[0], 7, str(r["year"]), border=1, align="C")
+            year_label = f"{r['year']} YTD" if r.get("status") == "ytd" else str(r["year"])
+            self.pdf.cell(col_w[0], 7, year_label, border=1, align="C")
             self.pdf.cell(col_w[1], 7, f"{r['dividend']:.2f}", border=1, align="C")
             self.pdf.ln()
 
@@ -739,12 +794,13 @@ class PDFReport:
         elif cy > 0:
             lines.append("近幾年有配息紀錄。")
         if ly is not None:
-            lines.append(f"最新殖利率：{ly:.2f}%")
+            basis_year = dd.get("last_completed_year")
+            lines.append(f"{basis_year or '最近完整年度'}殖利率：{ly:.2f}%")
         if ay is not None and ay > 0 and ly is not None:
             direction = "高於" if ly > ay else "低於"
             lines.append(f"近 3 年平均殖利率 {ay:.2f}%，目前 {direction} 平均。")
         if lines:
-            self.pdf.multi_cell(0, 7, "  " + " ／ ".join(lines))
+            self._multi_cell(0, 7, "  " + " ／ ".join(lines))
 
     def _add_peers_section(self):
         peers = self.peers_data
@@ -755,7 +811,7 @@ class PDFReport:
         self._section_title("同業比較")
         self._font("", 10)
         industry_label = "類型" if is_etf else "產業"
-        self.pdf.cell(0, 7, f"{industry_label}：{self.stock_info.get('industry', '—')}", ln=True)
+        self.pdf.cell(0, 7, f"{industry_label}：{self.stock_info.get('industry', '—')}", new_x="LMARGIN", new_y="NEXT")
         self.pdf.ln(3)
         if is_etf:
             col_w = [35, 25, 25, 25, 25]
@@ -807,16 +863,16 @@ class PDFReport:
         analysis_summary = (self.news_data or {}).get("analysis_summary", "")
         if analysis_summary:
             self._font("B", 11)
-            self.pdf.cell(0, 7, "【趨勢摘要】", ln=True)
+            self.pdf.cell(0, 7, "【趨勢摘要】", new_x="LMARGIN", new_y="NEXT")
             self._font("", 10)
-            self.pdf.multi_cell(0, 7, analysis_summary)
+            self._multi_cell(0, 7, analysis_summary)
             self.pdf.ln(4)
         if not news_items:
             self._font("", 11)
-            self.pdf.cell(0, 8, "暫無近期新聞資料。", ln=True)
+            self.pdf.cell(0, 8, "暫無近期新聞資料。", new_x="LMARGIN", new_y="NEXT")
             return
         self._font("B", 11)
-        self.pdf.cell(0, 7, f"【近期相關新聞共 {len(news_items)} 則】", ln=True)
+        self.pdf.cell(0, 7, f"【近期相關新聞共 {len(news_items)} 則】", new_x="LMARGIN", new_y="NEXT")
         self.pdf.ln(2)
         for i, item in enumerate(news_items[:15], 1):
             try:
@@ -827,17 +883,17 @@ class PDFReport:
                 src_part = f"({src})" if src else ""
                 line = f"{i}. {title}"
                 self._font("B", 9)
-                self.pdf.set_text_color(25, 118, 210)
-                self.pdf.multi_cell(0, 6, line)
+                self.pdf.set_text_color(18, 48, 71)
+                self._multi_cell(0, 6, line)
                 self.pdf.set_text_color(100, 100, 100)
                 self._font("", 8)
                 if date_part or src_part:
                     self.pdf.set_x(self.pdf.l_margin)
-                    self.pdf.cell(0, 5, f"   {date_part} {src_part}", ln=True)
+                    self.pdf.cell(0, 5, f"   {date_part} {src_part}", new_x="LMARGIN", new_y="NEXT")
                 if item.summary:
                     summary = item.summary[:100]
                     self.pdf.set_text_color(80, 80, 80)
-                    self.pdf.cell(0, 5, f"   {summary}", ln=True)
+                    self._multi_cell(0, 5, f"   {summary}")
                 self.pdf.set_text_color(0, 0, 0)
                 self.pdf.ln(2)
             except (AttributeError, KeyError) as e:
@@ -849,7 +905,7 @@ class PDFReport:
             self._font("", 8)
             self.pdf.set_text_color(150, 150, 150)
             failed = [k for k in provider_errors.keys()]
-            self.pdf.cell(0, 5, f"（部分新聞來源未取得資料：{', '.join(failed)}）", ln=True)
+            self.pdf.cell(0, 5, f"（部分新聞來源未取得資料：{', '.join(failed)}）", new_x="LMARGIN", new_y="NEXT")
             self.pdf.set_text_color(0, 0, 0)
 
     def _add_disclaimer(self):
@@ -859,17 +915,16 @@ class PDFReport:
         self.pdf.rect(15, self.pdf.get_y(), 180, 50, "F")
         self.pdf.set_text_color(80, 80, 80)
         self._font("B", 14)
-        self.pdf.cell(0, 10, "投資免責聲明", ln=True, align="C")
+        self.pdf.cell(0, 10, "投資免責聲明", new_x="LMARGIN", new_y="NEXT", align="C")
         self.pdf.ln(5)
         self._font("", 10)
         self.pdf.set_text_color(100, 100, 100)
-        self.pdf.multi_cell(0, 7,
+        self._multi_cell(0, 7,
             "所有投資相關內容僅供參考，不構成任何投資建議，"
             "使用者應自行評估風險。\n\n"
-            "本報告資料來源包括但不限於：公開資訊觀測站(MOPS)、"
-            "臺灣證券交易所(TWSE)、Yahoo Finance、"
-            "Google 新聞、MoneyDJ、鉅亨網、經濟日報等公開來源。\n\n"
-            "報告由系統自動產生，資訊正確性以各原始來源為準。\n"
+            f"本報告本次資料來源：{self._data_source_summary()}。\n\n"
+            "第三方資料可能延遲、缺漏或受使用條款限制；資訊正確性以 TWSE、TPEx 與"
+            "公開資訊觀測站等官方原始公告為準。\n"
             "投資有風險，入市前請審慎評估。",
             align="C")
         self.pdf.set_text_color(0, 0, 0)
@@ -879,13 +934,13 @@ class PDFReport:
         is_etf = self.stock_info.get("is_etf", False)
         self._section_title("專有名詞解釋")
         entries = [
-            ("本益比 (PE)", "股價 ÷ 每股盈餘。代表買這支股票「幾年回本」。PE 越低越便宜，但也要看產業和成長性。"),
-            ("股價淨值比 (PB)", "股價 ÷ 每股淨值。PB < 1 代表股價低於公司淨值，可能被低估。"),
-            ("PEG", "PE ÷ EPS 成長率。PEG < 1 代表成長足以支撐本益比，可能被低估；> 2 則需注意估值風險。"),
-            ("ROE (股東權益報酬率)", "稅後淨利 ÷ 股東權益。衡量公司用股東的錢賺錢的效率。ROE > 15% 算不錯。"),
-            ("殖利率", "每股股利 ÷ 股價。代表每年可拿回的現金比例。殖利率越高，現金回報越好。"),
+            ("本益比 (PE)", "股價 ÷ 每股盈餘，表示市場給予盈餘的倍數；不同產業、景氣階段與會計品質不可直接橫向比較。"),
+            ("股價淨值比 (PB)", "股價 ÷ 每股淨值。低於 1 不等於被低估，仍須檢查資產品質、獲利能力與產業特性。"),
+            ("PEG", "PE ÷ EPS 成長率。本工具僅將其作為啟發式參考；成長率期間、負成長與一次性盈餘會使結果失真。"),
+            ("ROE (股東權益報酬率)", "稅後淨利 ÷ 平均股東權益，用於觀察資本使用效率；高槓桿也可能推升 ROE。"),
+            ("殖利率", "每股現金股利 ÷ 參考股價。高殖利率可能來自股價下跌，且過去配息不保證未來配息。"),
             ("安全邊際", "(合理價 - 目前股價) / 合理價。預留的下跌緩衝空間，安全邊際越高風險越低。"),
-            ("健康度評分", "0~100 分，綜合成長性(30%)、估值(25%)、獲利(20%)、動能(15%)、穩定(10%)。"),
+            ("健康度評分", "資料覆蓋至少 50% 才顯示。權重為成長 22%、估值 20%、獲利 18%、品質 15%、動能 12%、穩定 8%、現金流 5%；未經績效回測校準。"),
         ]
         if is_etf:
             entries = [
@@ -893,18 +948,18 @@ class PDFReport:
                 ("折溢價", "市價與 NAV 之間的偏離幅度。溢價（市價 > NAV）代表買貴了，折價（市價 < NAV）代表買便宜了。溢價 > 1% 應謹慎。"),
                 ("費用率 (Expense Ratio)", "ETF 每年的管理費、保管費等總和佔基金淨值的比例。費用率越低，長期投資成本越少。一般被動型 ETF 費用率 < 0.5%。"),
                 ("AUM (資產管理規模)", "ETF 管理的總資產金額。規模越大通常代表流動性越好、折溢價較穩定。"),
-                ("殖利率", "每股股利 ÷ 股價。代表每年可拿回的現金比例。殖利率越高，現金回報越好。"),
+                ("殖利率", "每股現金股利 ÷ 參考股價。高殖利率可能來自股價下跌，且過去配息不保證未來配息。"),
                 ("追蹤誤差 (Tracking Error)", "ETF 報酬與其追蹤指數報酬之間的偏離程度。誤差越小，代表 ETF 複製指數效果越好。"),
-                ("本益比 (PE)", "股價 ÷ 每股盈餘。代表買這支股票「幾年回本」。PE 越低越便宜，但也要看產業和成長性。"),
+                ("本益比 (PE)", "股價 ÷ 每股盈餘，表示市場給予盈餘的倍數；不同產業、景氣階段與會計品質不可直接橫向比較。"),
             ]
         self._font("", 10)
         for term, desc in entries:
             self.pdf.set_fill_color(240, 245, 250)
             self._font("B", 11)
-            self.pdf.cell(0, 8, f"  {term}", ln=True, fill=True)
+            self.pdf.cell(0, 8, f"  {term}", new_x="LMARGIN", new_y="NEXT", fill=True)
             self.pdf.set_fill_color(255, 255, 255)
             self._font("", 10)
             self.pdf.set_text_color(80, 80, 80)
-            self.pdf.multi_cell(0, 7, f"  {desc}")
+            self._multi_cell(0, 7, f"  {desc}")
             self.pdf.set_text_color(0, 0, 0)
             self.pdf.ln(2)

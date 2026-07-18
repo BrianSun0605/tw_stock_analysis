@@ -1,22 +1,21 @@
 import os
-import shutil
+
+from config import FONT_PATH
 
 
 def get_chinese_font():
-    font_path = None
+    """Return an existing CJK font path on native Windows, WSL, or Linux."""
+    windows_dir = os.environ.get("WINDIR", r"C:\Windows")
     candidates = [
+        FONT_PATH,
+        os.path.join(windows_dir, "Fonts", "msjh.ttc"),
+        os.path.join(windows_dir, "Fonts", "msjhbd.ttc"),
+        os.path.join(windows_dir, "Fonts", "mingliu.ttc"),
         "/mnt/c/Windows/Fonts/msjh.ttc",
         "/mnt/c/Windows/Fonts/msjhbd.ttc",
-        "/mnt/c/Windows/Fonts/simsun.ttc",
         "/mnt/c/Windows/Fonts/mingliu.ttc",
-        "/mnt/c/Windows/Fonts/NotoSansTC-VF.ttf",
-        "/mnt/c/Windows/Fonts/STKAITI.TTF",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         os.path.expanduser("~/.fonts/NotoSansTC-Regular.otf"),
     ]
-    for c in candidates:
-        if os.path.exists(c):
-            font_path = c
-            break
-    return font_path
+    return next((path for path in candidates if path and os.path.isfile(path)), None)
