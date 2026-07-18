@@ -79,8 +79,13 @@ def main():
     interactive_menu()
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        batch_mode(sys.argv[1])
-    else:
+def cli(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
         main()
+        return 0
+    return 0 if batch_mode(args[0]) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())

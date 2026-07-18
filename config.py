@@ -1,14 +1,22 @@
 import os
 
+import yfinance as yf
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 CACHE_MAX_ITEMS = 100
 FONT_DIR = os.path.join(BASE_DIR, "fonts")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 CHART_DIR = os.path.join(CACHE_DIR, "charts")
+YFINANCE_CACHE_DIR = os.path.join(CACHE_DIR, "yfinance")
 
-for d in [CACHE_DIR, FONT_DIR, OUTPUT_DIR, CHART_DIR]:
+for d in [CACHE_DIR, FONT_DIR, OUTPUT_DIR, CHART_DIR, YFINANCE_CACHE_DIR]:
     os.makedirs(d, exist_ok=True)
+
+# yfinance otherwise writes SQLite cookie/timezone caches to the user profile.
+# Desktop/sandbox launches may not be allowed to write there, so keep every
+# runtime cache inside this project's writable cache directory.
+yf.set_tz_cache_location(YFINANCE_CACHE_DIR)
 
 HEADERS = {
     "User-Agent": (

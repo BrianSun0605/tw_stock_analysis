@@ -15,7 +15,9 @@
 - [x] 修正真實資料 `NaN` 造成瀏覽器無法解析結果；預覽先行、PDF 逐章進度、事件重播與重新整理恢復。
 - [x] 專業投資工具 UI；HTML／CSS／JS 模組化與響應式 QA。
 - [x] PDF 來源、單位、長文字、游標崩潰與免責聲明修正；11 頁轉圖 QA。
-- [x] 38 項測試、compile、Node syntax、pip check、2330／0050 live smoke。
+- [x] 修正 yfinance 預設 SQLite cache 不可寫造成的分析異常；cache 固定於專案內並安全攔截資料庫例外。
+- [x] CLI 成功／失敗改用 0／1 退出碼，供腳本與 CI 正確判斷。
+- [x] 42 項測試、compile、Node syntax、pip check、2330／0050 live smoke。
 - [x] 完整稽核報告與決策 checklist。
 
 ## 待專案負責人決定

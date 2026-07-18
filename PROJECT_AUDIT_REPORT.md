@@ -36,19 +36,21 @@
 
 | 檢查 | 結果 |
 |---|---|
-| `python -m pytest -q -p no:cacheprovider` | 38 passed |
+| `python -m pytest -q -p no:cacheprovider` | 42 passed |
 | `python -m pip check` | No broken requirements |
 | Python `compileall` | 通過 |
 | 5 個前端 module + Service Worker `node --check` | 通過 |
 | `git diff --check` | 無 whitespace error |
 | 官方股票快照 | TWSE + TPEx 共 1,981 筆；未達 800/700 門檻會拒絕覆寫 |
 | 股票抽查 | 2330＝台積電／半導體；9942＝茂順／其他 |
-| 真實端到端 smoke | 2330 與 0050 完成；0050 已驗證 preview 先於 PDF、10 段報告進度與實際下載連結 |
+| 真實端到端 smoke | 2330 與 0050 均為 `completed`；PDF 分別完成 12/12、10/10 章節並驗證 `%PDF-1.3` 檔頭 |
 | PDF 壓力測試 | 11 頁產生成功、文字可抽取、全頁轉圖檢視 |
 | UI viewport | 1440×900、768×1024、390×844，無水平 overflow |
 | UI 互動 | 鍵盤搜尋、SSE mock render、CSV formula neutralization、XSS payload 均通過 |
 
 本次真實 smoke 的 2330 資料為測試當下快照，不是報告中的永久行情主張；重要的是來源欄位與管線行為已核對。
+
+2026-07-18 故障回歸另驗證 `0050_report_20260718_132828.pdf`（574,005 bytes）與 `2330_report_20260718_132932.pdf`（694,813 bytes）確實存在且有 PDF 檔頭；不是依 UI 訊息推定成功。
 
 ## 4. 問題與修正紀錄
 
@@ -92,6 +94,8 @@
 | SRC-09 | provider exception 被吞掉 | 聚合結果回傳 per-provider status/error；`已修復` |
 | CACHE-01 | Windows 不合法 `:`、路徑穿越與非原子寫入 | slug+SHA、lock、temp+fsync+replace；`已修復` |
 | CACHE-02 | 語意變更後可能讀到舊假資料 cache | 股票 mapping v4、revenue v3、EPS v3；`已修復` |
+| CACHE-03 | yfinance 預設 cookie SQLite 位於可能不可寫的使用者 cache，導致第 1/5 步拋出 `peewee.OperationalError` | 固定使用專案 `cache/yfinance`，並將 peewee database error 納入安全降級邊界；`已修復` |
+| CLI-01 | 命令列分析失敗仍回傳退出碼 0，造成自動化誤判 | 新增 `cli()`，成功回傳 0、失敗回傳 1；`已修復` |
 | UI-01 | 1,700+ 行 inline HTML/CSS/JS、紫色裝飾與大量貓圖 | 語意 HTML + CSS + 5 個 JS module；專業投資工具視覺；`已修復` |
 | UI-02 | 前端另算評級，與 PDF 不同 | 只呈現後端評級；`已修復` |
 | UI-03 | CSV 無 RFC 4180 quote 且可公式注入 | 全欄 quote、雙引號 escaping、`=+-@` 前綴中和；`已修復` |
