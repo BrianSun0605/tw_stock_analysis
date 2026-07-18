@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,14 @@ from report.font import get_chinese_font
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class _KnownFontSubsetNoiseFilter(logging.Filter):
+    def filter(self, record):
+        return not record.getMessage().startswith("MERG NOT subset")
+
+
+logging.getLogger("fontTools.subset").addFilter(_KnownFontSubsetNoiseFilter())
 
 
 class PDFReport:
@@ -99,11 +108,13 @@ class PDFReport:
         sections.append(("新聞摘要", self._add_news_section))
         sections.append(("免責聲明", self._add_disclaimer))
         sections.append(("名詞解釋", self._add_glossary))
-        total = len(sections)
+        total = len(sections) + 1
         for i, (name, func) in enumerate(sections):
             func()
             if self.progress_callback:
                 self.progress_callback(i + 1, total, name)
+        if self.progress_callback:
+            self.progress_callback(total, total, "寫入 PDF 檔案")
         self.pdf.output(output_path)
         return output_path
 

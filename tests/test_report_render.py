@@ -12,6 +12,7 @@ def test_pdf_renders_multiple_risk_and_news_multicells(monkeypatch):
     output_dir.mkdir(exist_ok=True)
     monkeypatch.setattr(generator_module, "OUTPUT_DIR", str(output_dir))
     filename = f"render-regression-{uuid.uuid4().hex}.pdf"
+    report_progress = []
     health = {
         "total_score": 70,
         "level": "良好",
@@ -44,10 +45,15 @@ def test_pdf_renders_multiple_risk_and_news_multicells(monkeypatch):
             ],
             "analysis_text": "這是換行安全性的回歸測試。",
         },
+        progress_callback=lambda current, total, section: report_progress.append(
+            (current, total, section)
+        ),
     )
     output = Path(report.generate(filename))
     try:
         assert output.read_bytes().startswith(b"%PDF")
         assert output.stat().st_size > 10_000
+        assert report_progress[-1][0] == report_progress[-1][1]
+        assert report_progress[-1][2] == "寫入 PDF 檔案"
     finally:
         output.unlink(missing_ok=True)

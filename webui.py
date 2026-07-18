@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import hmac
 import json
+import math
 import os
-import queue
+import re
 import secrets
 import sys
 import threading
@@ -25,6 +26,9 @@ PICTURE_DIR = os.path.join(BASE, "picture")
 ICON_DIR = os.path.join(PICTURE_DIR, "icon")
 MAX_TASKS = 20
 TASK_TTL_SECONDS = 3600
+COMPLETED_TASK_TTL_SECONDS = 600
+TERMINAL_TASK_STATES = {"completed", "failed"}
+STEP_PATTERN = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
 
 tasks = {}
 tasks_lock = threading.RLock()
@@ -37,32 +41,158 @@ def _valid_query(value) -> str:
     return value if 0 < len(value) <= 64 else ""
 
 
+def _json_safe(value):
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "item"):
+        try:
+            return _json_safe(value.item())
+        except (TypeError, ValueError):
+            return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _json_default(value):
+    return _json_safe(value)
+
+
 def _prune_tasks() -> None:
-    cutoff = time.time() - TASK_TTL_SECONDS
+    now = time.time()
     with tasks_lock:
-        stale = [
-            task_id for task_id, task in tasks.items()
-            if task["created_at"] < cutoff
-            or (task.get("thread") and not task["thread"].is_alive() and task["queue"].empty())
-        ]
+        stale = []
+        for task_id, task in tasks.items():
+            age = now - task["updated_at"]
+            if task["status"] in TERMINAL_TASK_STATES:
+                expired = age > COMPLETED_TASK_TTL_SECONDS
+            else:
+                expired = now - task["created_at"] > TASK_TTL_SECONDS
+            if expired:
+                stale.append(task_id)
         for task_id in stale:
             tasks.pop(task_id, None)
 
 
-def _run_analysis(query: str, log_queue: queue.Queue) -> None:
+def _task_snapshot(task_id, task):
+    return {
+        "task_id": task_id,
+        "query": task["query"],
+        "status": task["status"],
+        "stage": task["stage"],
+        "stage_total": task["stage_total"],
+        "message": task["message"],
+        "report": task["report"],
+        "preview": task["preview"],
+        "filename": task["filename"],
+        "error": task["error"],
+        "created_at": task["created_at"],
+        "updated_at": task["updated_at"],
+    }
+
+
+def _publish(task_id: str, event_type: str, value=None) -> None:
+    with tasks_lock:
+        task = tasks.get(task_id)
+        if not task:
+            return
+        event = {"id": task["next_event_id"], "type": event_type}
+        task["next_event_id"] += 1
+        now = time.time()
+
+        if event_type == "log":
+            message = str(value or "")
+            event["msg"] = message
+            task["message"] = message
+            match = STEP_PATTERN.match(message)
+            if match:
+                task["stage"] = int(match.group(1))
+                task["stage_total"] = int(match.group(2))
+            if task["status"] == "queued":
+                task["status"] = "analyzing"
+        elif event_type == "result":
+            preview = _json_safe(value or {})
+            event["data"] = preview
+            task["preview"] = preview
+            task["status"] = "reporting"
+            task["message"] = "分析結果已可查看，正在產生 PDF 報告"
+        elif event_type == "report":
+            report = _json_safe(value or {})
+            event.update(report)
+            task["report"] = report
+            task["status"] = "reporting"
+        elif event_type == "done":
+            filename = os.path.basename(value) if value else None
+            event["filename"] = filename
+            task["filename"] = filename
+            task["status"] = "completed"
+            task["message"] = "分析與 PDF 報告已完成"
+        elif event_type == "error":
+            message = str(value or "分析失敗，請稍後再試。")
+            event["msg"] = message
+            task["error"] = message
+            task["status"] = "failed"
+            task["message"] = message
+        else:
+            raise ValueError(f"unsupported task event: {event_type}")
+
+        task["updated_at"] = now
+        task["events"].append(event)
+        task["condition"].notify_all()
+
+
+def _run_analysis(query: str, task_id: str) -> None:
+    preview_published = False
+
+    def publish_preview(preview):
+        nonlocal preview_published
+        preview_published = True
+        _publish(task_id, "result", preview)
+
+    def publish_report_progress(current, total, section):
+        _publish(task_id, "report", {
+            "current": int(current),
+            "total": int(total),
+            "section": str(section),
+        })
+
     try:
         result = analyze_service(
             query,
-            progress=lambda message: log_queue.put(("log", message)),
+            progress=lambda message: _publish(task_id, "log", message),
+            preview_callback=publish_preview,
+            report_progress=publish_report_progress,
         )
-        log_queue.put(("result", result.preview))
+        if not preview_published:
+            publish_preview(result.preview)
         filename = os.path.basename(result.output_path) if result.output_path else None
-        log_queue.put(("done", filename))
+        _publish(task_id, "done", filename)
     except AnalysisError as exc:
-        log_queue.put(("error", str(exc)))
+        message = str(exc)
+        if preview_published:
+            message = f"分析結果已完成，但 PDF 報告產生失敗：{message}"
+        _publish(task_id, "error", message)
     except Exception:
         logger.exception("web analysis failed for %s", query)
-        log_queue.put(("error", "分析過程發生異常，請稍後再試。"))
+        message = (
+            "分析結果已完成，但 PDF 報告產生失敗，請重新執行。"
+            if preview_published else "分析過程發生異常，請稍後再試。"
+        )
+        _publish(task_id, "error", message)
+
+
+def _last_event_id() -> int:
+    raw = request.headers.get("Last-Event-ID") or request.args.get("after", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 def create_app(*, testing: bool = False) -> Flask:
@@ -131,57 +261,89 @@ def create_app(*, testing: bool = False) -> Flask:
             return jsonify({"error": "請輸入 1–64 字的股票代號或名稱"}), 400
         _prune_tasks()
         with tasks_lock:
-            if len(tasks) >= MAX_TASKS:
+            active_count = sum(
+                task["status"] not in TERMINAL_TASK_STATES
+                for task in tasks.values()
+            )
+            if active_count >= MAX_TASKS:
                 return jsonify({"error": "目前分析任務已滿，請稍後再試"}), 429
             task_id = uuid.uuid4().hex
-            task_queue = queue.Queue()
+            now = time.time()
+            task = {
+                "query": query,
+                "status": "queued",
+                "stage": 0,
+                "stage_total": 5,
+                "message": "分析任務已建立",
+                "report": {"current": 0, "total": 0, "section": ""},
+                "preview": None,
+                "filename": None,
+                "error": None,
+                "events": [],
+                "next_event_id": 1,
+                "created_at": now,
+                "updated_at": now,
+                "thread": None,
+                "condition": threading.Condition(tasks_lock),
+            }
             thread = threading.Thread(
                 target=_run_analysis,
-                args=(query, task_queue),
+                args=(query, task_id),
                 daemon=True,
                 name=f"analysis-{task_id[:8]}",
             )
-            tasks[task_id] = {
-                "queue": task_queue,
-                "thread": thread,
-                "created_at": time.time(),
-            }
+            task["thread"] = thread
+            tasks[task_id] = task
             thread.start()
-        return jsonify({"task_id": task_id}), 202
+        return jsonify({"task_id": task_id, "status": "queued"}), 202
+
+    @app.get("/task/<task_id>")
+    def task_status(task_id):
+        _prune_tasks()
+        with tasks_lock:
+            task = tasks.get(task_id)
+            if not task:
+                return jsonify({"error": "任務不存在或已過期"}), 404
+            snapshot = _task_snapshot(task_id, task)
+        response = jsonify(snapshot)
+        response.headers["Cache-Control"] = "no-cache, no-store"
+        return response
 
     @app.get("/stream/<task_id>")
     def stream(task_id):
+        cursor = _last_event_id()
         with tasks_lock:
-            task = tasks.get(task_id)
-        if not task:
-            return jsonify({"error": "任務不存在或已過期"}), 404
+            if task_id not in tasks:
+                return jsonify({"error": "任務不存在或已過期"}), 404
 
         def events():
-            task_queue = task["queue"]
-            thread = task["thread"]
-            try:
-                while True:
-                    try:
-                        event_type, value = task_queue.get(timeout=20)
-                    except queue.Empty:
-                        if not thread.is_alive():
-                            yield f"data: {json.dumps({'type': 'error', 'msg': '分析執行緒意外終止'}, ensure_ascii=False)}\n\n"
-                            return
-                        yield f"data: {json.dumps({'type': 'ping'})}\n\n"
-                        continue
-                    payload = {"type": event_type}
-                    if event_type == "result":
-                        payload["data"] = value
-                    elif event_type == "done":
-                        payload["filename"] = value
-                    else:
-                        payload["msg"] = value
-                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    if event_type in ("done", "error"):
-                        return
-            finally:
+            nonlocal cursor
+            while True:
                 with tasks_lock:
-                    tasks.pop(task_id, None)
+                    task = tasks.get(task_id)
+                    if not task:
+                        return
+                    pending = [event for event in task["events"] if event["id"] > cursor]
+                    terminal = task["status"] in TERMINAL_TASK_STATES
+                    if not pending and not terminal:
+                        task["condition"].wait(timeout=15)
+                        pending = [event for event in task["events"] if event["id"] > cursor]
+                        terminal = task["status"] in TERMINAL_TASK_STATES
+
+                if pending:
+                    for event in pending:
+                        cursor = event["id"]
+                        payload = json.dumps(
+                            event,
+                            ensure_ascii=False,
+                            default=_json_default,
+                            allow_nan=False,
+                        )
+                        yield f"id: {cursor}\ndata: {payload}\n\n"
+                    continue
+                if terminal:
+                    return
+                yield f"data: {json.dumps({'type': 'ping'})}\n\n"
 
         response = Response(events(), mimetype="text/event-stream")
         response.headers["Cache-Control"] = "no-cache, no-store"

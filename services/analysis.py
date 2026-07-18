@@ -226,6 +226,8 @@ def analyze(
     generate_report: bool = True,
     include_news: bool = True,
     progress: Optional[Callable[[str], None]] = None,
+    preview_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    report_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> AnalysisResult:
     emit = progress or (lambda _message: None)
     stock_info = _resolve_stock(query)
@@ -295,14 +297,17 @@ def analyze(
         market=market,
     )
 
-    emit("[5/5] 組裝預覽與 PDF")
+    emit("[5/5] 組裝分析結果")
     preview = _build_preview(
         basic_info, stock_info, price_data, price_info,
         revenue_data, revenue_chart, eps_data, eps_chart,
         news_data, valuation, dividend_data, calendar_events, peers_data,
     )
+    if preview_callback:
+        preview_callback(preview)
     output_path = None
     if generate_report:
+        emit("[5/5] 分析結果已可查看，正在產生 PDF 報告")
         report = PDFReport(
             stock_info=basic_info,
             price_data=price_data,
@@ -315,6 +320,7 @@ def analyze(
             valuation_analysis=valuation,
             dividend_data=dividend_data,
             peers_data=peers_data,
+            progress_callback=report_progress,
         )
         output_path = report.generate()
     return AnalysisResult(

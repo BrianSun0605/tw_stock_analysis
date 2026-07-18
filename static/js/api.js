@@ -21,25 +21,42 @@ export async function startAnalysis(query) {
   return parseResponse(response);
 }
 
+export async function getTask(taskId) {
+  const response = await fetch(`/task/${encodeURIComponent(taskId)}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  return parseResponse(response);
+}
+
 export function streamAnalysis(taskId, handlers) {
   const source = new EventSource(`/stream/${encodeURIComponent(taskId)}`);
+  let terminal = false;
+
+  source.onopen = () => handlers.connection?.("connected");
   source.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === "ping") return;
-    if (message.type === "log") handlers.log?.(message.msg);
-    if (message.type === "result") handlers.result?.(message.data);
-    if (message.type === "done") {
-      handlers.done?.(message.filename);
-      source.close();
-    }
-    if (message.type === "error") {
-      handlers.error?.(message.msg);
-      source.close();
+    try {
+      const message = JSON.parse(event.data);
+      if (message.type === "ping") return;
+      if (message.type === "log") handlers.log?.(message.msg);
+      if (message.type === "result") handlers.result?.(message.data);
+      if (message.type === "report") handlers.report?.(message);
+      if (message.type === "done") {
+        terminal = true;
+        handlers.done?.(message.filename);
+        source.close();
+      }
+      if (message.type === "error") {
+        terminal = true;
+        handlers.error?.(message.msg);
+        source.close();
+      }
+    } catch (error) {
+      handlers.clientError?.(error);
     }
   };
   source.onerror = () => {
-    handlers.error?.("與分析服務的連線中斷，請重新嘗試。");
-    source.close();
+    if (!terminal) handlers.connection?.("reconnecting");
   };
   return source;
 }

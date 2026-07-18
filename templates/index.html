@@ -7,7 +7,7 @@
   <meta name="shutdown-token" content="{{ shutdown_token }}">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/png" href="/picture/icon/icon-192.png">
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=4">
   <title>台股研究室｜投資分析工具</title>
 </head>
 <body>
@@ -20,7 +20,6 @@
       </a>
       <div class="header-actions">
         <span class="local-badge"><span aria-hidden="true"></span>本機運行</span>
-        <button id="exportCsv" class="button ghost" type="button" disabled>匯出摘要 CSV</button>
         <button id="shutdownApp" class="icon-button" type="button" title="關閉本機服務" aria-label="關閉本機服務">×</button>
       </div>
     </div>
@@ -31,7 +30,7 @@
       <div class="hero-copy">
         <p class="eyebrow">TAIWAN EQUITY RESEARCH</p>
         <h1 id="searchTitle">快速檢視估值、財務品質與風險</h1>
-        <p>輸入上市櫃股票代號或名稱。評分取決於可取得資料，缺漏項目不會自動補成零分。</p>
+        <p>輸入上市櫃股票代號或名稱。分析結果會先顯示，PDF 報告完成後再提供下載。</p>
       </div>
       <form id="searchForm" class="search-form" role="search" autocomplete="off">
         <label for="stockQuery">股票代號或名稱</label>
@@ -44,22 +43,60 @@
       </form>
     </section>
 
-    <section id="analysisProgress" class="progress-panel" aria-live="polite" hidden>
-      <div class="progress-heading">
+    <section id="analysisProgress" class="workflow-panel" data-state="idle" aria-labelledby="progressText" aria-live="polite" hidden>
+      <header class="workflow-heading">
         <div>
-          <p class="eyebrow">ANALYSIS IN PROGRESS</p>
+          <p id="progressKicker" class="eyebrow">ANALYSIS WORKFLOW</p>
           <h2 id="progressText">正在建立分析</h2>
+          <p id="progressDetail">資料取得時間會因來源回應速度而不同，請保持此分頁開啟。</p>
         </div>
-        <span id="progressCounter">0 / 5</span>
+        <span id="progressState" class="status-pill" data-tone="running">準備中</span>
+      </header>
+
+      <div class="analysis-meter">
+        <progress id="progressBar" class="progress-track" max="5" value="0" aria-label="分析進度"></progress>
+        <strong id="progressCounter">0 / 5</strong>
       </div>
-      <progress id="progressBar" class="progress-track" max="5" value="0" aria-label="分析進度"></progress>
-      <ol id="progressLog" class="progress-log"></ol>
+
+      <ol id="analysisSteps" class="analysis-steps" aria-label="分析步驟">
+        <li data-step="1" data-state="waiting"><span class="step-index">1</span><span><strong>行情與基本資料</strong><small>等待中</small></span></li>
+        <li data-step="2" data-state="waiting"><span class="step-index">2</span><span><strong>營收與季度 EPS</strong><small>等待中</small></span></li>
+        <li data-step="3" data-state="waiting"><span class="step-index">3</span><span><strong>財報與估值指標</strong><small>等待中</small></span></li>
+        <li data-step="4" data-state="waiting"><span class="step-index">4</span><span><strong>新聞、股利與同業</strong><small>等待中</small></span></li>
+        <li data-step="5" data-state="waiting"><span class="step-index">5</span><span><strong>組裝分析結果</strong><small>等待中</small></span></li>
+      </ol>
+
+      <section id="reportProgress" class="report-progress" aria-labelledby="reportProgressTitle" hidden>
+        <div class="report-progress-heading">
+          <div>
+            <p class="eyebrow">PDF REPORT</p>
+            <h3 id="reportProgressTitle">PDF 報告產生中</h3>
+          </div>
+          <strong id="reportProgressCounter">0 / 0</strong>
+        </div>
+        <p id="reportProgressText">正在準備報告內容</p>
+        <progress id="reportProgressBar" class="progress-track report-track" max="1" value="0" aria-label="PDF 報告進度"></progress>
+      </section>
+
+      <p id="connectionNotice" class="connection-notice" role="status" hidden>連線暫時中斷，分析仍在背景執行，正在恢復進度。</p>
+
+      <details class="run-log">
+        <summary>查看執行紀錄</summary>
+        <ol id="progressLog" class="progress-log"></ol>
+      </details>
+
+      <div class="workflow-actions">
+        <a id="progressDownloadPdf" class="button primary" href="#" hidden>下載 PDF 報告</a>
+        <button id="viewResults" class="button secondary" type="button" hidden>查看分析結果</button>
+        <button id="retryAnalysis" class="button secondary" type="button" hidden>重新執行</button>
+        <button id="analyzeAnother" class="button quiet" type="button" hidden>分析另一檔</button>
+      </div>
     </section>
 
     <section id="emptyState" class="empty-state">
       <img src="/picture/icon/icon-192.png" width="70" height="70" alt="">
       <h2>從一檔股票開始研究</h2>
-      <p>完成分析後，這裡會呈現估值區間、健康度、財務數據、同業與新聞來源狀態。</p>
+      <p>分析完成後，這裡會先呈現估值、健康度與資料來源；PDF 報告會在背景繼續產生。</p>
       <div class="quick-picks" aria-label="快速選擇">
         <button type="button" data-query="2330">2330 台積電</button>
         <button type="button" data-query="0050">0050 元大台灣50</button>
@@ -85,7 +122,14 @@
           <div><strong id="ratingBadge" class="rating n-a">N/A</strong><b id="ratingScore">資料不足</b></div>
           <small id="ratingCoverage">資料覆蓋率 —</small>
         </div>
-        <a id="downloadPdf" class="button secondary" href="#" hidden>下載完整 PDF</a>
+        <div class="result-actions">
+          <div id="resultStatus" class="result-status" data-state="reporting" role="status">
+            <strong id="resultStatusTitle">分析結果已完成</strong>
+            <small id="resultStatusText">PDF 報告正在背景產生</small>
+          </div>
+          <a id="downloadPdf" class="button primary" href="#" hidden>下載 PDF 報告</a>
+          <button id="exportCsv" class="button secondary" type="button" disabled>匯出摘要 CSV</button>
+        </div>
       </header>
 
       <div id="qualityBanner" class="quality-banner" role="status"></div>
@@ -169,6 +213,6 @@
     <p>本工具供研究與教學用途，不構成投資建議。第三方資料可能延遲、缺漏或受使用條款限制；交易前請核對 TWSE、TPEx 與公開資訊觀測站。</p>
   </footer>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="/static/js/app.js"></script>
+  <script type="module" src="/static/js/app.js?v=4"></script>
 </body>
 </html>

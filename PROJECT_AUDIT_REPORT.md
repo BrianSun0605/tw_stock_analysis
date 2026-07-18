@@ -36,14 +36,14 @@
 
 | 檢查 | 結果 |
 |---|---|
-| `python -m pytest -q -p no:cacheprovider` | 32 passed |
+| `python -m pytest -q -p no:cacheprovider` | 38 passed |
 | `python -m pip check` | No broken requirements |
 | Python `compileall` | 通過 |
 | 5 個前端 module + Service Worker `node --check` | 通過 |
 | `git diff --check` | 無 whitespace error |
 | 官方股票快照 | TWSE + TPEx 共 1,981 筆；未達 800/700 門檻會拒絕覆寫 |
 | 股票抽查 | 2330＝台積電／半導體；9942＝茂順／其他 |
-| 真實端到端 smoke | 2330 成功完成 5 階段；EPS＝Yahoo Finance `quarterly_income_stmt`；月營收＝未取得 |
+| 真實端到端 smoke | 2330 與 0050 完成；0050 已驗證 preview 先於 PDF、10 段報告進度與實際下載連結 |
 | PDF 壓力測試 | 11 頁產生成功、文字可抽取、全頁轉圖檢視 |
 | UI viewport | 1440×900、768×1024、390×844，無水平 overflow |
 | UI 互動 | 鍵盤搜尋、SSE mock render、CSV formula neutralization、XSS payload 均通過 |
@@ -92,12 +92,16 @@
 | SRC-09 | provider exception 被吞掉 | 聚合結果回傳 per-provider status/error；`已修復` |
 | CACHE-01 | Windows 不合法 `:`、路徑穿越與非原子寫入 | slug+SHA、lock、temp+fsync+replace；`已修復` |
 | CACHE-02 | 語意變更後可能讀到舊假資料 cache | 股票 mapping v4、revenue v3、EPS v3；`已修復` |
-| UI-01 | 1,700+ 行 inline HTML/CSS/JS、紫色裝飾與大量貓圖 | 174 行語意 HTML + CSS + 5 個 JS module；專業投資工具視覺；`已修復` |
+| UI-01 | 1,700+ 行 inline HTML/CSS/JS、紫色裝飾與大量貓圖 | 語意 HTML + CSS + 5 個 JS module；專業投資工具視覺；`已修復` |
 | UI-02 | 前端另算評級，與 PDF 不同 | 只呈現後端評級；`已修復` |
 | UI-03 | CSV 無 RFC 4180 quote 且可公式注入 | 全欄 quote、雙引號 escaping、`=+-@` 前綴中和；`已修復` |
-| PWA-01 | Service Worker cache-first 包含動態 API | 版本化 shell cache；navigation network-first；API 完全排除；`已修復` |
+| PWA-01 | Service Worker cache-first 可能保留舊 JS，且動態 API 不應快取 | v4 network-first 靜態資源；task/API/download 完全排除；註冊時略過 HTTP cache；`已修復` |
 | WEB-02 | 任務表無 lock／上限／TTL | lock、最多 20、TTL 與 pruning；`已修復`，可再縮小上限 |
 | WEB-03 | SSE 可能暴露 traceback | 使用者只收穩定訊息，完整錯誤留本機 logger；`已修復` |
+| WEB-04 | 第 5/5 步後才開始同步產生 PDF，預覽與完成通知都被阻塞 | preview callback 先發布分析結果，PDF 另走逐章進度；`已修復` |
+| WEB-05 | SSE 中的 `NaN`／Infinity 不是合法瀏覽器 JSON，真實 ETF preview 解析失敗 | 所有非有限數值遞迴轉 `null`，輸出以 `allow_nan=False` fail closed；`已修復` |
+| WEB-06 | SSE 斷線即刪除任務，重新整理或短暫斷線後無法恢復 | 任務快照、事件 ID、Last-Event-ID 重播、10 分鐘終態保留與 session 恢復；`已修復` |
+| UI-04 | 「5/5」看似全部完成，但沒有結果、PDF 狀態、檔名或下一步 | 分析／PDF 雙進度、成功與部分失敗狀態、明確下載 CTA、再次分析操作；`已修復` |
 | PDF-02 | AUM 單位、殖利率倍率、YTD 標籤與來源聲明錯 | 全部校正並動態列出本次來源；`已修復` |
 | PDF-03 | 長名稱、警告、摘要用單行 cell | 改用 multi-cell 與長名稱縮字；`已修復` |
 | DOC-01 | README 聲稱不存在來源／不一致權重／舊 Python | 全面重寫；`已修復` |
@@ -113,6 +117,8 @@
 - 響應式：桌機雙欄、平板轉單欄、手機 2-column KPI；測試未出現水平 overflow。
 - 可操作性：input label、skip link、ARIA listbox、上下鍵／Enter／Esc、focus-visible、reduced-motion。
 - 資料誠實性：每個空值使用「資料不足」，coverage banner 提醒缺漏，不生成前端假評分。
+- 任務可見性：五步分析與 PDF 寫檔分開；分析結果先顯示，PDF 完成後明示實際檔名與儲存位置。
+- 恢復能力：SSE 事件可重播，重新整理頁面可從 task snapshot 恢復預覽、報告進度與完成下載。
 - 安全：不使用動態 HTML 字串；第三方 URL 僅允許 http/https。
 
 ### 5.2 後續改善

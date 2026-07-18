@@ -8,7 +8,7 @@ def test_template_has_no_inline_script_or_event_handlers():
     template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     assert "onclick=" not in template
     assert "<style" not in template
-    assert "<script type=\"module\" src=\"/static/js/app.js\"></script>" in template
+    assert '<script type="module" src="/static/js/app.js?v=4"></script>' in template
 
 
 def test_frontend_avoids_html_injection_sinks():

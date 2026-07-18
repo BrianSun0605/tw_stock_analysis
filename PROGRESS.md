@@ -12,9 +12,10 @@
 - [x] 修正股利年度口徑、時區、同業殖利率與 cache 原子性。
 - [x] 新聞改為 Google／Bing RSS，停用失效 scraper，回傳來源狀態。
 - [x] Web shutdown、task、SSE、download、CSP 與 security headers 強化。
+- [x] 修正真實資料 `NaN` 造成瀏覽器無法解析結果；預覽先行、PDF 逐章進度、事件重播與重新整理恢復。
 - [x] 專業投資工具 UI；HTML／CSS／JS 模組化與響應式 QA。
 - [x] PDF 來源、單位、長文字、游標崩潰與免責聲明修正；11 頁轉圖 QA。
-- [x] 32 項測試、compile、Node syntax、pip check、2330 live smoke。
+- [x] 38 項測試、compile、Node syntax、pip check、2330／0050 live smoke。
 - [x] 完整稽核報告與決策 checklist。
 
 ## 待專案負責人決定
