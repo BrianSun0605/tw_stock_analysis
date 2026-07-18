@@ -1,0 +1,29 @@
+# Python bytecode and test artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environments and editor files
+.venv/
+venv/
+env/
+.env
+.env.*
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated application data
+cache/
+output/
+tmp/
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
