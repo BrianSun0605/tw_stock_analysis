@@ -1,9 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-import yfinance as yf
-
-from stock.data import _suffix
 from stock.yf_errors import YFINANCE_EXCEPTIONS
 from utils.cache import cache_get, cache_set
 from utils.logger import get_logger
@@ -12,13 +9,20 @@ logger = get_logger(__name__)
 _DIV_CACHE_TTL = 43200
 
 
-def get_dividend_data(stock_id: str, market: Optional[str] = None) -> Dict[str, Any]:
+def get_dividend_data(
+    stock_id: str,
+    market: Optional[str] = None,
+    snapshot: Optional[Any] = None,
+) -> Dict[str, Any]:
     cached = cache_get(stock_id, "dividend_v2", max_age_sec=_DIV_CACHE_TTL)
     if cached is not None:
         return cached
     try:
-        ticker = yf.Ticker(f"{stock_id}{_suffix(market)}")
-        history_frame = ticker.history(period="10y")
+        if snapshot is None:
+            from services.market_snapshot import MarketDataSnapshot
+
+            snapshot = MarketDataSnapshot(stock_id, market or "")
+        history_frame = snapshot.history(period="10y")
         if history_frame.empty or "Dividends" not in history_frame:
             return _empty_result()
         positive = history_frame["Dividends"][history_frame["Dividends"] > 0]
@@ -42,7 +46,9 @@ def get_dividend_data(stock_id: str, market: Optional[str] = None) -> Dict[str, 
             months.setdefault(year, set()).add(event["month"])
 
         current_year = datetime.now().year
-        completed_years = sorted((year for year in yearly if year < current_year), reverse=True)
+        completed_years = sorted(
+            (year for year in yearly if year < current_year), reverse=True
+        )
         history = [
             {
                 "year": year,
@@ -53,12 +59,15 @@ def get_dividend_data(stock_id: str, market: Optional[str] = None) -> Dict[str, 
             for year in completed_years
         ]
         if current_year in yearly:
-            history.insert(0, {
-                "year": current_year,
-                "dividend": round(yearly[current_year], 2),
-                "months": sorted(months[current_year]),
-                "status": "ytd",
-            })
+            history.insert(
+                0,
+                {
+                    "year": current_year,
+                    "dividend": round(yearly[current_year], 2),
+                    "months": sorted(months[current_year]),
+                    "status": "ytd",
+                },
+            )
 
         consecutive = 0
         last_complete_year = current_year - 1
@@ -68,19 +77,25 @@ def get_dividend_data(stock_id: str, market: Optional[str] = None) -> Dict[str, 
                 break
             consecutive += 1
 
-        info = ticker.info or {}
+        info = snapshot.info()
         current_price = info.get("currentPrice") or info.get("regularMarketPrice")
         if current_price is None and not history_frame["Close"].empty:
             current_price = history_frame["Close"].iloc[-1]
 
-        last_complete_dividend = yearly.get(completed_years[0]) if completed_years else None
+        last_complete_dividend = (
+            yearly.get(completed_years[0]) if completed_years else None
+        )
         latest_yield = (
             round(last_complete_dividend / current_price * 100, 2)
             if last_complete_dividend is not None and current_price
             else None
         )
         ytd_dividend = round(yearly.get(current_year, 0), 2)
-        ytd_yield = round(ytd_dividend / current_price * 100, 2) if ytd_dividend and current_price else None
+        ytd_yield = (
+            round(ytd_dividend / current_price * 100, 2)
+            if ytd_dividend and current_price
+            else None
+        )
 
         avg_yield = None
         if len(completed_years) >= 3:
@@ -107,7 +122,9 @@ def get_dividend_data(stock_id: str, market: Optional[str] = None) -> Dict[str, 
         cache_set(stock_id, "dividend_v2", result)
         return result
     except YFINANCE_EXCEPTIONS as exc:
-        logger.warning("dividend data fetch failed for %s: %s", stock_id, exc, exc_info=True)
+        logger.warning(
+            "dividend data fetch failed for %s: %s", stock_id, exc, exc_info=True
+        )
         return _empty_result()
 
 

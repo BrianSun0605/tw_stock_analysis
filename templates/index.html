@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#123047">
   <meta name="shutdown-token" content="{{ shutdown_token }}">
   <link rel="manifest" href="/manifest.json">
-  <link rel="icon" type="image/png" href="/picture/icon/icon-192.png">
-  <link rel="stylesheet" href="/static/css/app.css?v=4">
+  <link rel="icon" type="image/svg+xml" href="/picture/icon/app-icon.svg">
+  <link rel="stylesheet" href="/static/css/app.css?v=9">
   <title>台股研究室｜投資分析工具</title>
 </head>
 <body>
@@ -15,7 +15,7 @@
   <header class="app-header">
     <div class="header-inner">
       <a class="brand" href="/" aria-label="台股研究室首頁">
-        <img src="/picture/icon/icon-192.png" alt="" width="36" height="36">
+        <img src="/picture/icon/app-icon.svg" alt="" width="36" height="36">
         <span><strong>台股研究室</strong><small>資料驅動的研究輔助工具</small></span>
       </a>
       <div class="header-actions">
@@ -30,12 +30,12 @@
       <div class="hero-copy">
         <p class="eyebrow">TAIWAN EQUITY RESEARCH</p>
         <h1 id="searchTitle">快速檢視估值、財務品質與風險</h1>
-        <p>輸入上市櫃股票代號或名稱。分析結果會先顯示，PDF 報告完成後再提供下載。</p>
+        <p>輸入上市櫃股票代號或名稱。分析結果會先顯示，需要時再產生並下載 PDF。</p>
       </div>
       <form id="searchForm" class="search-form" role="search" autocomplete="off">
         <label for="stockQuery">股票代號或名稱</label>
         <div class="search-control">
-          <input id="stockQuery" name="query" type="search" maxlength="64" placeholder="例如：2330、台積電" aria-autocomplete="list" aria-controls="searchResults" aria-expanded="false" spellcheck="false">
+          <input id="stockQuery" name="query" type="search" maxlength="64" placeholder="例如：2330、台積電" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="searchResults" aria-expanded="false" spellcheck="false">
           <button id="analyzeButton" class="button primary" type="submit">開始分析</button>
         </div>
         <ul id="searchResults" class="suggestions" role="listbox" hidden></ul>
@@ -88,15 +88,16 @@
       <div class="workflow-actions">
         <a id="progressDownloadPdf" class="button primary" href="#" hidden>下載 PDF 報告</a>
         <button id="viewResults" class="button secondary" type="button" hidden>查看分析結果</button>
+        <button id="cancelTask" class="button quiet" type="button" hidden>取消目前工作</button>
         <button id="retryAnalysis" class="button secondary" type="button" hidden>重新執行</button>
         <button id="analyzeAnother" class="button quiet" type="button" hidden>分析另一檔</button>
       </div>
     </section>
 
     <section id="emptyState" class="empty-state">
-      <img src="/picture/icon/icon-192.png" width="70" height="70" alt="">
+      <img src="/picture/icon/app-icon.svg" width="70" height="70" alt="">
       <h2>從一檔股票開始研究</h2>
-      <p>分析完成後，這裡會先呈現估值、健康度與資料來源；PDF 報告會在背景繼續產生。</p>
+      <p>分析完成後，這裡會呈現估值、健康度與資料來源；需要時可另外產生 PDF。</p>
       <div class="quick-picks" aria-label="快速選擇">
         <button type="button" data-query="2330">2330 台積電</button>
         <button type="button" data-query="0050">0050 元大台灣50</button>
@@ -104,7 +105,7 @@
       </div>
     </section>
 
-    <section id="resultView" class="results" hidden aria-live="polite">
+    <section id="resultView" class="results" tabindex="-1" hidden aria-labelledby="stockName">
       <header class="result-header">
         <div class="stock-identity">
           <p id="stockMeta" class="eyebrow">—</p>
@@ -117,27 +118,56 @@
           <small id="stockChange">—</small>
           <small id="priceDate">—</small>
         </div>
-        <div class="rating-block">
-          <span>綜合評級</span>
-          <div><strong id="ratingBadge" class="rating n-a">N/A</strong><b id="ratingScore">資料不足</b></div>
-          <small id="ratingCoverage">資料覆蓋率 —</small>
+        <div class="model-rating-group" aria-label="兩個獨立評級">
+          <div class="rating-block">
+            <span>成長性</span>
+            <div><strong id="growthRatingBadge" class="rating n-a">N/A</strong><b id="growthRatingText">尚未驗證</b></div>
+            <small id="growthRatingMeta">不與安全性平均</small>
+          </div>
+          <div class="rating-block">
+            <span>財務安全</span>
+            <div><strong id="safetyRatingBadge" class="rating n-a">N/A</strong><b id="safetyRatingText">資料不足</b></div>
+            <small id="safetyRatingMeta">不代表股價不會下跌</small>
+          </div>
         </div>
         <div class="result-actions">
           <div id="resultStatus" class="result-status" data-state="reporting" role="status">
             <strong id="resultStatusTitle">分析結果已完成</strong>
-            <small id="resultStatusText">PDF 報告正在背景產生</small>
+            <small id="resultStatusText">PDF 尚未產生</small>
           </div>
+          <button id="generatePdf" class="button primary" type="button" hidden>產生並下載 PDF</button>
           <a id="downloadPdf" class="button primary" href="#" hidden>下載 PDF 報告</a>
           <button id="exportCsv" class="button secondary" type="button" disabled>匯出摘要 CSV</button>
         </div>
       </header>
 
+      <section id="factsSummary" class="facts-summary" aria-label="本次資料狀態"></section>
       <div id="qualityBanner" class="quality-banner" role="status"></div>
+
+      <section class="panel prediction-panel" aria-labelledby="modelTitle">
+        <div class="panel-heading">
+          <div><p class="eyebrow">MODEL ESTIMATES</p><h3 id="modelTitle">預估與風險篩檢</h3></div>
+          <span class="method-tag">與可信資料分開</span>
+        </div>
+        <p id="modelSeparationNote" class="model-separation-note"></p>
+        <div class="model-card-grid">
+          <article class="model-card">
+            <div class="model-card-heading"><h4>未來成長性</h4><span id="growthModelStatus">尚未驗證</span></div>
+            <div id="growthModelDetails" class="metric-grid"></div>
+            <p id="growthModelNote" class="panel-note"></p>
+          </article>
+          <article class="model-card">
+            <div class="model-card-heading"><h4 id="safetyModelTitle">公司財務安全</h4><span id="safetyModelStatus">資料不足</span></div>
+            <div id="safetyModelDetails" class="metric-grid"></div>
+            <p id="safetyModelNote" class="panel-note"></p>
+          </article>
+        </div>
+      </section>
 
       <section class="kpi-grid" aria-label="關鍵指標">
         <article><span>歷史本益比</span><strong id="kpiPe">資料不足</strong><small>目前估計值</small></article>
         <article><span>合理價</span><strong id="kpiFair">資料不足</strong><small>歷史 PE 分位法</small></article>
-        <article><span>健康度</span><strong id="kpiHealth">資料不足</strong><small id="kpiHealthLevel">資料覆蓋門檻 50%</small></article>
+        <article><span>健康度</span><strong id="kpiHealth">資料不足</strong><small id="kpiHealthLevel">資料覆蓋門檻 70%</small></article>
         <article><span>股利殖利率</span><strong id="kpiYield">資料不足</strong><small id="kpiYieldBasis">最近完整年度</small></article>
         <article><span>近月營收 YoY</span><strong id="kpiRevenue">資料不足</strong><small id="kpiRevenuePeriod">—</small></article>
         <article><span>最新季 EPS</span><strong id="kpiEps">資料不足</strong><small id="kpiEpsPeriod">—</small></article>
@@ -168,7 +198,7 @@
 
           <section class="panel" aria-labelledby="peerTitle">
             <div class="panel-heading"><div><p class="eyebrow">PEER SET</p><h3 id="peerTitle">同產業參考</h3></div></div>
-            <div class="table-wrap"><table><thead><tr><th>代號</th><th>名稱</th><th>股價</th><th>本益比</th><th>殖利率</th><th>市值</th></tr></thead><tbody id="peerTable"></tbody></table></div>
+            <div class="table-wrap" tabindex="0" aria-label="同業比較表，可左右捲動"><table><thead><tr><th>代號</th><th>名稱</th><th>股價</th><th>本益比</th><th>殖利率</th><th>市值</th></tr></thead><tbody id="peerTable"></tbody></table></div>
           </section>
         </div>
 
@@ -192,7 +222,14 @@
           <section class="panel" aria-labelledby="newsTitle">
             <div class="panel-heading"><div><p class="eyebrow">PUBLIC NEWS</p><h3 id="newsTitle">近期公開新聞</h3></div><span class="method-tag">關鍵字分類</span></div>
             <div id="newsStatus" class="news-status"></div>
-            <ol id="newsList" class="news-list"></ol>
+            <section class="news-group" aria-labelledby="companyNewsTitle">
+              <h4 id="companyNewsTitle">公司相關</h4>
+              <ol id="companyNewsList" class="news-list"></ol>
+            </section>
+            <section class="news-group" aria-labelledby="industryNewsTitle">
+              <h4 id="industryNewsTitle">產業備援</h4>
+              <ol id="industryNewsList" class="news-list"></ol>
+            </section>
           </section>
 
           <section class="panel" aria-labelledby="sourceTitle">
@@ -213,6 +250,6 @@
     <p>本工具供研究與教學用途，不構成投資建議。第三方資料可能延遲、缺漏或受使用條款限制；交易前請核對 TWSE、TPEx 與公開資訊觀測站。</p>
   </footer>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="/static/js/app.js?v=4"></script>
+  <script type="module" src="/static/js/app.js?v=7"></script>
 </body>
 </html>

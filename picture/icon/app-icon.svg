@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">台股研究室</title>
+  <desc id="desc">深藍底的折線圖與三根資料柱</desc>
+  <rect width="512" height="512" rx="104" fill="#123047"/>
+  <path d="M104 365V146" stroke="#dfeaf0" stroke-width="24" stroke-linecap="round"/>
+  <path d="M104 365h306" stroke="#dfeaf0" stroke-width="24" stroke-linecap="round"/>
+  <rect x="151" y="266" width="48" height="70" rx="12" fill="#78c5e7"/>
+  <rect x="238" y="218" width="48" height="118" rx="12" fill="#78c5e7"/>
+  <rect x="325" y="166" width="48" height="170" rx="12" fill="#78c5e7"/>
+  <path d="m136 248 79-53 67 28 105-91" fill="none" stroke="#79d6a5" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="136" cy="248" r="16" fill="#f4f6f7"/>
+  <circle cx="215" cy="195" r="16" fill="#f4f6f7"/>
+  <circle cx="282" cy="223" r="16" fill="#f4f6f7"/>
+  <circle cx="387" cy="132" r="16" fill="#f4f6f7"/>
+</svg>

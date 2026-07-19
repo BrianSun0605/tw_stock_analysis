@@ -29,8 +29,25 @@ export async function getTask(taskId) {
   return parseResponse(response);
 }
 
-export function streamAnalysis(taskId, handlers) {
-  const source = new EventSource(`/stream/${encodeURIComponent(taskId)}`);
+export async function requestReport(taskId) {
+  const response = await fetch(`/task/${encodeURIComponent(taskId)}/report`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  return parseResponse(response);
+}
+
+export async function cancelTask(taskId) {
+  const response = await fetch(`/task/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  return parseResponse(response);
+}
+
+export function streamAnalysis(taskId, handlers, after = 0) {
+  const cursor = Math.max(0, Number(after) || 0);
+  const source = new EventSource(`/stream/${encodeURIComponent(taskId)}?after=${cursor}`);
   let terminal = false;
 
   source.onopen = () => handlers.connection?.("connected");
@@ -38,6 +55,7 @@ export function streamAnalysis(taskId, handlers) {
     try {
       const message = JSON.parse(event.data);
       if (message.type === "ping") return;
+      handlers.cursor?.(Number(message.id) || 0);
       if (message.type === "log") handlers.log?.(message.msg);
       if (message.type === "result") handlers.result?.(message.data);
       if (message.type === "report") handlers.report?.(message);
@@ -49,6 +67,16 @@ export function streamAnalysis(taskId, handlers) {
       if (message.type === "error") {
         terminal = true;
         handlers.error?.(message.msg);
+        source.close();
+      }
+      if (message.type === "report_error") {
+        terminal = true;
+        handlers.reportError?.(message.msg);
+        source.close();
+      }
+      if (message.type === "cancelled") {
+        terminal = true;
+        handlers.cancelled?.(message.msg);
         source.close();
       }
     } catch (error) {

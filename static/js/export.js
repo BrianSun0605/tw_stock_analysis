@@ -10,7 +10,8 @@ export function csvCell(value) {
 
 export function buildSummaryCsv(data) {
   const stock = data.stock || {};
-  const rating = data.overall_rating || {};
+  const growth = data.model_assessments?.growth || {};
+  const safety = data.model_assessments?.safety || {};
   const health = data.health_score || {};
   const fair = data.fair_price || {};
   const rows = [
@@ -21,8 +22,14 @@ export function buildSummaryCsv(data) {
     ["產業", stock.industry],
     ["參考價", stock.current_price],
     ["價格日期", stock.price_date],
-    ["綜合評級", rating.rating],
-    ["綜合分數", rating.score],
+    ["正式成長評級", growth.rating],
+    ["實驗成長分級", growth.experimental_rating],
+    ["12 個月營收成長估計百分點", growth.prediction_pct],
+    ["成長模型狀態", growth.status],
+    ["正式財務安全評級", safety.rating],
+    ["實驗財務安全分級", safety.experimental_rating],
+    ["財務安全分數", safety.score],
+    ["財務安全模型狀態", safety.status],
     ["健康度", health.score],
     ["健康度資料覆蓋率", health.coverage],
     ["目前本益比", fair.current_pe],

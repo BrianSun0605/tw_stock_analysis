@@ -1,9 +1,13 @@
-import io
 import os
 import re
-from datetime import datetime, timedelta
+import tempfile
+import threading
+import uuid
+from functools import wraps
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -12,20 +16,65 @@ import requests
 import yfinance as yf
 
 from config import (
-    HEADERS, TIMEOUT, CHART_DIR, CACHE_DIR, MPL_FONT_PATH,
+    HEADERS,
+    TIMEOUT,
+    CHART_DIR,
+    MPL_FONT_PATH,
 )
 from utils.cache import cache_get, cache_set
 from stock.yf_errors import YFINANCE_EXCEPTIONS
+from stock.official_financials import (
+    OfficialDataMissing,
+    OfficialNetworkError,
+    get_official_revenue,
+)
 from utils.logger import get_logger
+
 plt.rcParams["axes.unicode_minus"] = False
 
 logger = get_logger(__name__)
+_PLOT_LOCK = threading.RLock()
 
-ALLOW_HISTOCK_SCRAPING = os.environ.get("TWSTOCK_ALLOW_HISTOCK", "").strip().lower() in {"1", "true", "yes"}
+
+def _plot_locked(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        with _PLOT_LOCK:
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _chart_path(stock_id: str, kind: str, artifact_dir: Optional[str] = None) -> str:
+    directory = artifact_dir or CHART_DIR
+    os.makedirs(directory, exist_ok=True)
+    safe_stock_id = re.sub(r"[^0-9A-Za-z_-]", "_", str(stock_id)) or "unknown"
+    return os.path.join(directory, f"{safe_stock_id}_{kind}_{uuid.uuid4().hex}.png")
+
+
+def _save_chart_atomic(path: str) -> None:
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=os.path.dirname(path), prefix=".chart-", suffix=".tmp", delete=False
+        ) as handle:
+            temp_path = handle.name
+        plt.savefig(temp_path, format="png", dpi=150, bbox_inches="tight")
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+ALLOW_HISTOCK_SCRAPING = os.environ.get(
+    "TWSTOCK_ALLOW_HISTOCK", ""
+).strip().lower() in {"1", "true", "yes"}
 
 _MPL_FP = None
 try:
     from matplotlib.font_manager import fontManager, FontProperties
+
     if os.path.exists(MPL_FONT_PATH):
         fontManager.addfont(MPL_FONT_PATH)
         _MPL_FP = FontProperties(fname=MPL_FONT_PATH)
@@ -39,10 +88,12 @@ except (ImportError, AttributeError) as e:
 
 
 def _suffix(market: Optional[str] = None) -> str:
-    return ".TWO" if market == "上櫃" else ".TW"
+    return ".TWO" if market in {"上櫃", "興櫃"} else ".TW"
 
 
-def _yield_as_decimal(value: Any, dividend_rate: Any = None, price: Any = None) -> Optional[float]:
+def _yield_as_decimal(
+    value: Any, dividend_rate: Any = None, price: Any = None
+) -> Optional[float]:
     """Normalize yfinance's version-dependent yield field to a decimal ratio."""
     try:
         if dividend_rate is not None and price is not None and float(price) > 0:
@@ -55,80 +106,167 @@ def _yield_as_decimal(value: Any, dividend_rate: Any = None, price: Any = None) 
         return None
 
 
-def get_price_data(stock_id: str, periods: Optional[Dict[str, int]] = None, market: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def get_price_data(
+    stock_id: str,
+    periods: Optional[Dict[str, int]] = None,
+    market: Optional[str] = None,
+    artifact_dir: Optional[str] = None,
+    snapshot: Optional[Any] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if periods is None:
         periods = {"3m": 90, "6m": 180, "1y": 365}
     results: Dict[str, Any] = {}
     ticker_symbol = f"{stock_id}{_suffix(market)}"
     try:
-        ticker = yf.Ticker(ticker_symbol)
+        if snapshot is None:
+            from services.market_snapshot import MarketDataSnapshot
+
+            snapshot = MarketDataSnapshot(stock_id, market or "")
         info: Dict[str, Any] = {}
         try:
-            info = ticker.info or {}
+            info = snapshot.info()
         except YFINANCE_EXCEPTIONS as e:
             logger.warning("price info fetch warning for %s: %s", ticker_symbol, e)
+        full_history = snapshot.history(period="1y")
+        if full_history is None or full_history.empty:
+            logger.warning(
+                "Yahoo Finance returned no price history for %s", ticker_symbol
+            )
+            return {
+                label: {
+                    "df": pd.DataFrame(),
+                    "chart": None,
+                    "charts": {},
+                    "high": None,
+                    "low": None,
+                }
+                for label in periods
+            }, info
+        full_history = full_history.sort_index().rename(
+            columns={
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )
+        latest = pd.Timestamp(full_history.index[-1])
         for label, days in periods.items():
-            end = datetime.now()
-            start = end - timedelta(days=days)
-            df = ticker.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
+            cutoff = latest - pd.Timedelta(days=days)
+            df = full_history[full_history.index >= cutoff].copy()
             if df.empty:
-                results[label] = {"df": df, "chart": None, "high": None, "low": None}
+                results[label] = {
+                    "df": df,
+                    "chart": None,
+                    "charts": {},
+                    "high": None,
+                    "low": None,
+                }
                 continue
-            df = df.rename(columns={
-                "Open": "open", "High": "high", "Low": "low",
-                "Close": "close", "Volume": "volume"
-            })
-            chart_path = _plot_price_chart(df, stock_id, label)
+            chart_path = _plot_price_chart(
+                df, stock_id, label, artifact_dir=artifact_dir
+            )
             chart_variants = {}
             if label == "1y":
                 for m in ("price", "ma", "full"):
-                    chart_variants[m] = _plot_price_chart(df, stock_id, label, mode=m)
+                    chart_variants[m] = _plot_price_chart(
+                        df, stock_id, label, mode=m, artifact_dir=artifact_dir
+                    )
             high_idx = df["high"].idxmax()
             low_idx = df["low"].idxmin()
             results[label] = {
                 "df": df,
                 "chart": chart_path,
                 "charts": chart_variants,
-                "high": {"date": str(high_idx.date()), "price": round(float(df.loc[high_idx, "high"]), 2)},
-                "low": {"date": str(low_idx.date()), "price": round(float(df.loc[low_idx, "low"]), 2)},
+                "high": {
+                    "date": str(high_idx.date()),
+                    "price": round(float(df.loc[high_idx, "high"]), 2),
+                },
+                "low": {
+                    "date": str(low_idx.date()),
+                    "price": round(float(df.loc[low_idx, "low"]), 2),
+                },
             }
         return results, info
     except YFINANCE_EXCEPTIONS as e:
-        logger.error("price data fetch failed for %s: %s", ticker_symbol, e, exc_info=True)
-        return {"3m": {"df": pd.DataFrame(), "chart": None, "charts": {}, "high": None, "low": None},
-                "6m": {"df": pd.DataFrame(), "chart": None, "charts": {}, "high": None, "low": None},
-                "1y": {"df": pd.DataFrame(), "chart": None, "charts": {}, "high": None, "low": None}}, {}
+        logger.error(
+            "price data fetch failed for %s: %s", ticker_symbol, e, exc_info=True
+        )
+        return {
+            "3m": {
+                "df": pd.DataFrame(),
+                "chart": None,
+                "charts": {},
+                "high": None,
+                "low": None,
+            },
+            "6m": {
+                "df": pd.DataFrame(),
+                "chart": None,
+                "charts": {},
+                "high": None,
+                "low": None,
+            },
+            "1y": {
+                "df": pd.DataFrame(),
+                "chart": None,
+                "charts": {},
+                "high": None,
+                "low": None,
+            },
+        }, {}
 
 
-def _plot_price_chart(df: pd.DataFrame, stock_id: str, label: str, mode: str = "full") -> str:
-    os.makedirs(CHART_DIR, exist_ok=True)
-    path = os.path.join(CHART_DIR, f"{stock_id}_price_{label}_{mode}.png")
+@_plot_locked
+def _plot_price_chart(
+    df: pd.DataFrame,
+    stock_id: str,
+    label: str,
+    mode: str = "full",
+    artifact_dir: Optional[str] = None,
+) -> str:
+    path = _chart_path(stock_id, f"price_{label}_{mode}", artifact_dir)
     fig, ax1 = plt.subplots(figsize=(10, 4))
     ax1.plot(df.index, df["close"], "b-", linewidth=1.5, label="收盤價")
     ax1.fill_between(df.index, df["close"], alpha=0.1, color="blue")
     if mode in ("ma", "full"):
-        for period, color, lw, name in [(20, "#FF9800", 1, "月線(20)"),
-                                         (60, "#9C27B0", 1, "季線(60)"),
-                                         (200, "#F44336", 1, "年線(200)")]:
+        for period, color, lw, name in [
+            (20, "#FF9800", 1, "月線(20)"),
+            (60, "#9C27B0", 1, "季線(60)"),
+            (200, "#F44336", 1, "年線(200)"),
+        ]:
             if len(df) >= period:
                 sma = df["close"].rolling(window=period).mean()
-                ax1.plot(df.index, sma, color=color, linewidth=lw, alpha=0.7, label=name)
+                ax1.plot(
+                    df.index, sma, color=color, linewidth=lw, alpha=0.7, label=name
+                )
     ax1.set_ylabel("價格 (元)", fontsize=11)
     ax1.legend(loc="upper left")
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
     high_idx = df["high"].idxmax()
     low_idx = df["low"].idxmin()
-    ax1.annotate(f"H: {df.loc[high_idx, 'high']:.1f}",
-                 xy=(high_idx, df.loc[high_idx, "high"]),
-                 xytext=(10, 10), textcoords="offset points",
-                 fontsize=9, color="red", fontweight="bold",
-                 arrowprops=dict(arrowstyle="->", color="red"))
-    ax1.annotate(f"L: {df.loc[low_idx, 'low']:.1f}",
-                 xy=(low_idx, df.loc[low_idx, "low"]),
-                 xytext=(10, -15), textcoords="offset points",
-                 fontsize=9, color="green", fontweight="bold",
-                 arrowprops=dict(arrowstyle="->", color="green"))
+    ax1.annotate(
+        f"H: {df.loc[high_idx, 'high']:.1f}",
+        xy=(high_idx, df.loc[high_idx, "high"]),
+        xytext=(10, 10),
+        textcoords="offset points",
+        fontsize=9,
+        color="red",
+        fontweight="bold",
+        arrowprops=dict(arrowstyle="->", color="red"),
+    )
+    ax1.annotate(
+        f"L: {df.loc[low_idx, 'low']:.1f}",
+        xy=(low_idx, df.loc[low_idx, "low"]),
+        xytext=(10, -15),
+        textcoords="offset points",
+        fontsize=9,
+        color="green",
+        fontweight="bold",
+        arrowprops=dict(arrowstyle="->", color="green"),
+    )
     if mode == "full" and "volume" in df.columns and df["volume"].sum() > 0:
         ax2 = ax1.twinx()
         ax2.bar(df.index, df["volume"] / 1e6, alpha=0.2, color="gray", width=0.8)
@@ -136,28 +274,30 @@ def _plot_price_chart(df: pd.DataFrame, stock_id: str, label: str, mode: str = "
     labels_map = {"3m": "近3個月", "6m": "近6個月", "1y": "近1年"}
     plt.title(f"{stock_id} 股價走勢 ({labels_map.get(label, label)})", fontsize=13)
     plt.tight_layout()
-    plt.savefig(path, dpi=150, bbox_inches="tight")
+    _save_chart_atomic(path)
     plt.close()
     return path
 
 
-def get_revenue_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    cached = cache_get(stock_id, "revenue_v3", max_age_sec=86400)
-    if cached is not None:
-        records = cached
-    else:
-        records = []
-        if ALLOW_HISTOCK_SCRAPING:
-            try:
-                records = _fetch_revenue_histock(stock_id)
-            except (requests.RequestException, ValueError, IndexError) as e:
-                logger.warning("opt-in HiStock revenue fetch failed for %s: %s", stock_id, e)
-        if not records:
-            records = _fetch_revenue_yfinance(stock_id, market)
-        if records:
-            cache_set(stock_id, "revenue_v3", records)
+def get_revenue_data(
+    stock_id: str, market: Optional[str] = None, artifact_dir: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    records = []
+    try:
+        records = get_official_revenue(stock_id, market or "")
+    except (OfficialNetworkError, OfficialDataMissing) as exc:
+        logger.warning("official revenue unavailable for %s: %s", stock_id, exc)
+    if not records and ALLOW_HISTOCK_SCRAPING:
+        try:
+            records = _fetch_revenue_histock(stock_id)
+        except (requests.RequestException, ValueError, IndexError) as e:
+            logger.warning(
+                "opt-in HiStock revenue fetch failed for %s: %s", stock_id, e
+            )
+    if not records:
+        records = _fetch_revenue_yfinance(stock_id, market)
     records.sort(key=lambda x: (x.get("year", 0), x.get("month", 0)))
-    chart_path = _plot_revenue_chart(records, stock_id)
+    chart_path = _plot_revenue_chart(records, stock_id, artifact_dir=artifact_dir)
     return records, chart_path
 
 
@@ -167,6 +307,7 @@ def _fetch_revenue_histock(stock_id: str) -> List[Dict[str, Any]]:
     resp.raise_for_status()
     resp.encoding = "utf-8"
     from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(resp.text, "lxml")
     tables = soup.find_all("table")
     records = []
@@ -208,35 +349,43 @@ def _fetch_revenue_histock(stock_id: str) -> List[Dict[str, Any]]:
                     yoy = float(yoy_str.replace("%", ""))
             except ValueError:
                 pass
-            records.append({
-                "year": year,
-                "month": month,
-                "source": "HiStock HTML (explicit opt-in)",
-                "revenue": revenue,
-                "prev_month_revenue": None,
-                "last_year_revenue": last_year_rev if last_year_rev > 0 else None,
-                "mom": mom,
-                "yoy": yoy,
-            })
+            records.append(
+                {
+                    "year": year,
+                    "month": month,
+                    "source": "HiStock HTML (explicit opt-in)",
+                    "revenue": revenue,
+                    "prev_month_revenue": None,
+                    "last_year_revenue": last_year_rev if last_year_rev > 0 else None,
+                    "mom": mom,
+                    "yoy": yoy,
+                }
+            )
     return records
 
 
-def _fetch_revenue_yfinance(stock_id: str, market: Optional[str] = None) -> List[Dict[str, Any]]:
+def _fetch_revenue_yfinance(
+    stock_id: str, market: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Do not convert annual/TTM revenue into fabricated monthly observations."""
     logger.info("monthly revenue unavailable from yfinance for %s", stock_id)
     return []
 
 
-def _plot_revenue_chart(records: List[Dict[str, Any]], stock_id: str) -> Optional[str]:
+@_plot_locked
+def _plot_revenue_chart(
+    records: List[Dict[str, Any]], stock_id: str, artifact_dir: Optional[str] = None
+) -> Optional[str]:
     if not records:
         return None
-    os.makedirs(CHART_DIR, exist_ok=True)
-    path = os.path.join(CHART_DIR, f"{stock_id}_revenue.png")
+    path = _chart_path(stock_id, "revenue", artifact_dir)
     labels = [f"{r.get('year', 0)}/{r['month']:02d}" for r in records]
     revenues = [r["revenue"] / 1e5 for r in records]
     moms = [r["mom"] if r["mom"] is not None else 0 for r in records]
     yoys = [r["yoy"] if r["yoy"] is not None else 0 for r in records]
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={"height_ratios": [3, 2]})
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(12, 8), gridspec_kw={"height_ratios": [3, 2]}
+    )
     colors = ["#2196F3" if i % 2 == 0 else "#1976D2" for i in range(len(revenues))]
     ax1.bar(range(len(revenues)), revenues, color=colors, alpha=0.8, width=0.6)
     ax1.set_ylabel("營收 (億元)", fontsize=11)
@@ -245,8 +394,22 @@ def _plot_revenue_chart(records: List[Dict[str, Any]], stock_id: str) -> Optiona
     for i, v in enumerate(revenues):
         ax1.text(i, v + max(revenues) * 0.01, f"{v:.1f}", ha="center", fontsize=7)
     ax1.grid(True, alpha=0.3, axis="y")
-    ax2.plot(range(len(moms)), moms, "g-o", linewidth=1.5, markersize=4, label="月增率 (MoM %)")
-    ax2.plot(range(len(yoys)), yoys, "r-s", linewidth=1.5, markersize=4, label="年增率 (YoY %)")
+    ax2.plot(
+        range(len(moms)),
+        moms,
+        "g-o",
+        linewidth=1.5,
+        markersize=4,
+        label="月增率 (MoM %)",
+    )
+    ax2.plot(
+        range(len(yoys)),
+        yoys,
+        "r-s",
+        linewidth=1.5,
+        markersize=4,
+        label="年增率 (YoY %)",
+    )
     ax2.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
     ax2.set_ylabel("增減率 (%)", fontsize=11)
     ax2.set_xlabel("年月", fontsize=11)
@@ -256,13 +419,19 @@ def _plot_revenue_chart(records: List[Dict[str, Any]], stock_id: str) -> Optiona
     ax2.grid(True, alpha=0.3)
     plt.suptitle(f"{stock_id} 每月營收分析", fontsize=14, y=1.01)
     plt.tight_layout()
-    plt.savefig(path, dpi=150, bbox_inches="tight")
+    _save_chart_atomic(path)
     plt.close()
     return path
 
 
-def get_eps_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    cached = cache_get(stock_id, "eps_v3", max_age_sec=86400)
+def get_eps_data(
+    stock_id: str,
+    market: Optional[str] = None,
+    artifact_dir: Optional[str] = None,
+    snapshot: Optional[Any] = None,
+    official_financials: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    cached = cache_get(stock_id, "eps_yahoo_v4", max_age_sec=86400)
     if cached is not None:
         records = cached
     else:
@@ -271,16 +440,46 @@ def get_eps_data(stock_id: str, market: Optional[str] = None) -> Tuple[List[Dict
             try:
                 records = _fetch_eps_histock(stock_id)
             except (requests.RequestException, ValueError, IndexError) as e:
-                logger.warning("opt-in HiStock EPS fetch failed for %s: %s", stock_id, e)
+                logger.warning(
+                    "opt-in HiStock EPS fetch failed for %s: %s", stock_id, e
+                )
         if not records:
             try:
-                records = _fetch_eps_yfinance(stock_id, market)
+                records = _fetch_eps_yfinance(stock_id, market, snapshot=snapshot)
             except YFINANCE_EXCEPTIONS as e:
-                logger.warning("yfinance quarterly EPS fetch failed for %s: %s", stock_id, e)
+                logger.warning(
+                    "yfinance quarterly EPS fetch failed for %s: %s", stock_id, e
+                )
         if records:
-            cache_set(stock_id, "eps_v3", records)
+            cache_set(stock_id, "eps_yahoo_v4", records)
+    official_eps = (official_financials or {}).get("official_cumulative_eps")
+    if official_eps and official_financials.get("quarter") == 1:
+        year = int(official_financials["year"])
+        records = [
+            record
+            for record in records
+            if (record.get("year"), record.get("quarter")) != (year, 1)
+        ]
+        records.append(
+            {
+                "year": year,
+                "quarter": 1,
+                "eps": official_eps["value"],
+                "label": f"Q1 {year}",
+                "source": official_eps["source"],
+                "source_url": (official_financials.get("source_urls") or {}).get(
+                    "income"
+                ),
+                "observed_at": official_eps["observed_at"],
+                "fetched_at": official_eps["fetched_at"],
+                "unit": official_eps["unit"],
+                "status": official_eps["status"],
+                "note": official_eps.get("note", ""),
+                "data_value": official_eps,
+            }
+        )
     records.sort(key=lambda x: (x["year"], x["quarter"]))
-    chart_path = _plot_eps_chart(records, stock_id)
+    chart_path = _plot_eps_chart(records, stock_id, artifact_dir=artifact_dir)
     return records, chart_path
 
 
@@ -290,6 +489,7 @@ def _fetch_eps_histock(stock_id: str) -> List[Dict[str, Any]]:
     resp.raise_for_status()
     resp.encoding = "utf-8"
     from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(resp.text, "lxml")
     tables = soup.find_all("table")
     records = []
@@ -305,7 +505,6 @@ def _fetch_eps_histock(stock_id: str) -> List[Dict[str, Any]]:
                 years.append(int(year_text))
         if not years:
             continue
-        quarter_rows = {}
         for row in rows[1:]:
             cells = row.find_all(["th", "td"])
             if not cells:
@@ -317,30 +516,45 @@ def _fetch_eps_histock(stock_id: str) -> List[Dict[str, Any]]:
                     if i + 1 < len(cells):
                         try:
                             eps_val = float(cells[i + 1].get_text(strip=True))
-                            records.append({
-                                "year": year,
-                                "quarter": q_num,
-                                "source": "HiStock HTML (explicit opt-in)",
-                                "eps": eps_val,
-                                "label": f"Q{q_num} {year}",
-                            })
+                            records.append(
+                                {
+                                    "year": year,
+                                    "quarter": q_num,
+                                    "source": "HiStock HTML (explicit opt-in)",
+                                    "eps": eps_val,
+                                    "label": f"Q{q_num} {year}",
+                                }
+                            )
                         except (ValueError, IndexError):
                             pass
     return records
 
 
-def _fetch_eps_yfinance(stock_id: str, market: Optional[str] = None) -> List[Dict[str, Any]]:
+def _fetch_eps_yfinance(
+    stock_id: str, market: Optional[str] = None, snapshot: Optional[Any] = None
+) -> List[Dict[str, Any]]:
     """Read genuine quarterly EPS, deriving it only from matching quarter NI/shares."""
-    frame = yf.Ticker(f"{stock_id}{_suffix(market)}").quarterly_income_stmt
+    if snapshot is None:
+        frame = yf.Ticker(f"{stock_id}{_suffix(market)}").quarterly_income_stmt
+    else:
+        frame = snapshot.quarterly_income_stmt()
     if frame is None or frame.empty:
         return []
 
     eps_rows = [row for row in ("Diluted EPS", "Basic EPS") if row in frame.index]
     income_rows = [
-        row for row in ("Diluted NI Availto Com Stockholders", "Net Income Common Stockholders")
+        row
+        for row in (
+            "Diluted NI Availto Com Stockholders",
+            "Net Income Common Stockholders",
+        )
         if row in frame.index
     ]
-    share_rows = [row for row in ("Diluted Average Shares", "Basic Average Shares") if row in frame.index]
+    share_rows = [
+        row
+        for row in ("Diluted Average Shares", "Basic Average Shares")
+        if row in frame.index
+    ]
     records: Dict[tuple[int, int], Dict[str, Any]] = {}
     for column in frame.columns:
         timestamp = pd.Timestamp(column)
@@ -354,11 +568,19 @@ def _fetch_eps_yfinance(stock_id: str, market: Optional[str] = None) -> List[Dic
                 break
         if value is None:
             net_income = next(
-                (float(frame.loc[row, column]) for row in income_rows if pd.notna(frame.loc[row, column])),
+                (
+                    float(frame.loc[row, column])
+                    for row in income_rows
+                    if pd.notna(frame.loc[row, column])
+                ),
                 None,
             )
             shares = next(
-                (float(frame.loc[row, column]) for row in share_rows if pd.notna(frame.loc[row, column])),
+                (
+                    float(frame.loc[row, column])
+                    for row in share_rows
+                    if pd.notna(frame.loc[row, column])
+                ),
                 None,
             )
             if net_income is not None and shares is not None and shares > 0:
@@ -371,15 +593,35 @@ def _fetch_eps_yfinance(stock_id: str, market: Optional[str] = None) -> List[Dic
             "eps": round(float(value), 4),
             "label": f"Q{quarter} {year}",
             "source": "Yahoo Finance quarterly_income_stmt",
+            "source_url": "https://finance.yahoo.com/",
+            "observed_at": timestamp.date().isoformat(),
+            "fetched_at": getattr(
+                snapshot, "created_at", datetime.now().astimezone().isoformat()
+            ),
+            "unit": "TWD_per_share",
+            "status": "fallback",
+            "note": "官方 OpenAPI 僅提供當期累計值時，以 Yahoo 單季資料補足歷史序列。",
+        }
+        records[(year, quarter)]["data_value"] = {
+            "value": records[(year, quarter)]["eps"],
+            "source": records[(year, quarter)]["source"],
+            "observed_at": records[(year, quarter)]["observed_at"],
+            "fetched_at": records[(year, quarter)]["fetched_at"],
+            "unit": records[(year, quarter)]["unit"],
+            "currency": "TWD",
+            "status": records[(year, quarter)]["status"],
+            "note": records[(year, quarter)]["note"],
         }
     return sorted(records.values(), key=lambda item: (item["year"], item["quarter"]))
 
 
-def _plot_eps_chart(records: List[Dict[str, Any]], stock_id: str) -> Optional[str]:
+@_plot_locked
+def _plot_eps_chart(
+    records: List[Dict[str, Any]], stock_id: str, artifact_dir: Optional[str] = None
+) -> Optional[str]:
     if not records:
         return None
-    os.makedirs(CHART_DIR, exist_ok=True)
-    path = os.path.join(CHART_DIR, f"{stock_id}_eps.png")
+    path = _chart_path(stock_id, "eps", artifact_dir)
     labels = [r["label"] for r in records]
     eps_values = [r["eps"] for r in records]
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -395,12 +637,14 @@ def _plot_eps_chart(records: List[Dict[str, Any]], stock_id: str) -> Optional[st
     ax.grid(True, alpha=0.3, axis="y")
     plt.title(f"{stock_id} 各季 EPS", fontsize=14)
     plt.tight_layout()
-    plt.savefig(path, dpi=150, bbox_inches="tight")
+    _save_chart_atomic(path)
     plt.close()
     return path
 
 
-def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str, Any]:
+def get_basic_stock_info(
+    stock_id: str, stock_info: Dict[str, Any], snapshot: Optional[Any] = None
+) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "stock_id": stock_id,
         "name": stock_info.get("name", ""),
@@ -410,8 +654,11 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
     }
     try:
         mkt = stock_info.get("market", "")
-        ticker = yf.Ticker(f"{stock_id}{_suffix(mkt)}")
-        info = ticker.info or {}
+        if snapshot is None:
+            from services.market_snapshot import MarketDataSnapshot
+
+            snapshot = MarketDataSnapshot(stock_id, mkt)
+        info = snapshot.info()
         if "longName" in info and info["longName"]:
             result["name_en"] = info["longName"]
             if not result["name"]:
@@ -423,12 +670,14 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
         if not result.get("market") and info.get("market"):
             result["market"] = info["market"]
         qt = info.get("quoteType", "")
-        result["is_etf"] = (qt == "ETF")
+        result["is_etf"] = stock_info.get("asset_type") == "etf" or qt == "ETF"
         if "currentPrice" in info and info["currentPrice"] is not None:
             result["current_price"] = info["currentPrice"]
         elif "regularMarketPrice" in info and info["regularMarketPrice"] is not None:
             result["current_price"] = info["regularMarketPrice"]
-        elif result.get("is_etf") and "navPrice" in info and info["navPrice"] is not None:
+        elif (
+            result.get("is_etf") and "navPrice" in info and info["navPrice"] is not None
+        ):
             result["current_price"] = info["navPrice"]
         if "previousClose" in info:
             result["prev_close"] = info["previousClose"]
@@ -456,20 +705,39 @@ def get_basic_stock_info(stock_id: str, stock_info: Dict[str, Any]) -> Dict[str,
         market_change = info.get("regularMarketChange")
         previous_close = info.get("previousClose")
         if market_change is not None and previous_close and previous_close > 0:
-            result["day_change_pct"] = round(float(market_change) / float(previous_close) * 100, 2)
+            result["day_change_pct"] = round(
+                float(market_change) / float(previous_close) * 100, 2
+            )
 
-        for field in ["grossMargins", "operatingMargins", "profitMargins",
-                      "returnOnEquity", "returnOnAssets",
-                      "debtToEquity", "totalDebt", "totalCash",
-                      "freeCashflow", "operatingCashflow",
-                      "revenueGrowth", "earningsGrowth",
-                      "revenuePerShare", "bookValue",
-                      "priceToBook", "forwardPE", "forwardEps",
-                      "dividendYield", "payoutRatio",
-                      "beta", "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
-                      "fiftyDayAverage", "twoHundredDayAverage",
-                      "shortRatio", "shortPercentOfFloat",
-                      "heldPercentInstitutions"]:
+        for field in [
+            "grossMargins",
+            "operatingMargins",
+            "profitMargins",
+            "returnOnEquity",
+            "returnOnAssets",
+            "debtToEquity",
+            "totalDebt",
+            "totalCash",
+            "freeCashflow",
+            "operatingCashflow",
+            "revenueGrowth",
+            "earningsGrowth",
+            "revenuePerShare",
+            "bookValue",
+            "priceToBook",
+            "forwardPE",
+            "forwardEps",
+            "dividendYield",
+            "payoutRatio",
+            "beta",
+            "fiftyTwoWeekHigh",
+            "fiftyTwoWeekLow",
+            "fiftyDayAverage",
+            "twoHundredDayAverage",
+            "shortRatio",
+            "shortPercentOfFloat",
+            "heldPercentInstitutions",
+        ]:
             if field in info and info[field] is not None:
                 if field == "dividendYield":
                     normalized_yield = _yield_as_decimal(

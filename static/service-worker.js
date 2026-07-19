@@ -1,13 +1,12 @@
-const CACHE_NAME = "tw-stock-v4";
+const CACHE_NAME = "tw-stock-v10";
 const SHELL = [
-  "/",
-  "/static/css/app.css?v=4",
-  "/static/js/app.js?v=4",
+  "/static/css/app.css?v=9",
+  "/static/js/app.js?v=7",
   "/static/js/api.js",
   "/static/js/dom.js",
   "/static/js/export.js",
   "/static/js/render.js",
-  "/picture/icon/icon-192.png",
+  "/picture/icon/app-icon.svg",
 ];
 
 self.addEventListener("install", event => {
@@ -27,7 +26,7 @@ self.addEventListener("activate", event => {
 });
 
 function isDynamic(url) {
-  return ["/analyze", "/task/", "/stream/", "/download/", "/shutdown", "/search", "/ping", "/api/"].some(path => url.pathname.startsWith(path));
+  return url.pathname === "/" || ["/analyze", "/task/", "/stream/", "/download/", "/shutdown", "/search", "/ping", "/api/"].some(path => url.pathname.startsWith(path));
 }
 
 async function networkFirst(request) {
@@ -41,7 +40,6 @@ async function networkFirst(request) {
   } catch {
     const cached = await caches.match(request);
     if (cached) return cached;
-    if (request.mode === "navigate") return caches.match("/");
     throw new Error("offline resource unavailable");
   }
 }

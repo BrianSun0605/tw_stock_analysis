@@ -1,16 +1,62 @@
 import os
+import sys
 
 import yfinance as yf
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(BASE_DIR, "cache")
-CACHE_MAX_ITEMS = 100
-FONT_DIR = os.path.join(BASE_DIR, "fonts")
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+BUNDLE_DIR = os.path.abspath(
+    getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+)
+BASE_DIR = BUNDLE_DIR
+APP_MODE = (
+    os.environ.get(
+        "TWSTOCK_APP_MODE",
+        "release" if getattr(sys, "frozen", False) else "dev",
+    )
+    .strip()
+    .lower()
+)
+if APP_MODE not in {"dev", "release"}:
+    raise RuntimeError("TWSTOCK_APP_MODE must be dev or release")
+
+if APP_MODE == "release":
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        local_appdata = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    DATA_ROOT = os.path.abspath(
+        os.environ.get(
+            "TWSTOCK_DATA_ROOT",
+            os.path.join(local_appdata, "FatCatGameStudio", "TWStockAnalysis"),
+        )
+    )
+else:
+    DATA_ROOT = BUNDLE_DIR
+
+CACHE_DIR = os.path.join(DATA_ROOT, "cache")
+CACHE_MAX_BYTES = 256 * 1024 * 1024
+CACHE_HIGH_WATER_BYTES = 200 * 1024 * 1024
+CACHE_EVICT_TARGET_BYTES = 160 * 1024 * 1024
+OUTPUT_MAX_BYTES = 250 * 1024 * 1024
+OUTPUT_TTL_SECONDS = 3 * 86400
+TASK_ARTIFACT_TTL_SECONDS = 86400
+CLEANUP_INTERVAL_SECONDS = 6 * 3600
+LOG_TTL_SECONDS = 14 * 86400
+LOG_MAX_BYTES = 20 * 1024 * 1024
+FONT_DIR = os.path.join(BUNDLE_DIR, "fonts")
+OUTPUT_DIR = os.path.join(DATA_ROOT, "output")
+LOG_DIR = os.path.join(DATA_ROOT, "logs")
 CHART_DIR = os.path.join(CACHE_DIR, "charts")
+TASK_ARTIFACT_DIR = os.path.join(CACHE_DIR, "tasks")
 YFINANCE_CACHE_DIR = os.path.join(CACHE_DIR, "yfinance")
 
-for d in [CACHE_DIR, FONT_DIR, OUTPUT_DIR, CHART_DIR, YFINANCE_CACHE_DIR]:
+for d in [
+    DATA_ROOT,
+    CACHE_DIR,
+    OUTPUT_DIR,
+    LOG_DIR,
+    CHART_DIR,
+    TASK_ARTIFACT_DIR,
+    YFINANCE_CACHE_DIR,
+]:
     os.makedirs(d, exist_ok=True)
 
 # yfinance otherwise writes SQLite cookie/timezone caches to the user profile.
@@ -30,9 +76,9 @@ HEADERS = {
 
 TIMEOUT = 30
 
-FONT_PATH = os.path.join(FONT_DIR, "msjh.ttc")
-FONT_PATH_BOLD = os.path.join(FONT_DIR, "msjhbd.ttc")
-FONT_NAME = "MSJH"
+FONT_PATH = os.path.join(FONT_DIR, "NotoSansTC-Regular.otf")
+FONT_PATH_BOLD = os.path.join(FONT_DIR, "NotoSansTC-Bold.otf")
+FONT_NAME = "NotoSansTC"
 
-MPL_FONT_PATH = os.path.join(FONT_DIR, "STKAITI.TTF")
-MPL_FONT_NAME = "STKaiti"
+MPL_FONT_PATH = FONT_PATH
+MPL_FONT_NAME = "Noto Sans TC"

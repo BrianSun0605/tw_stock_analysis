@@ -18,11 +18,6 @@ _exceptions = [
     requests.RequestException,
     TimeoutError,
     ConnectionError,
-    ValueError,
-    KeyError,
-    TypeError,
-    AttributeError,
-    IndexError,
 ]
 if CurlRequestException is not None:
     _exceptions.append(CurlRequestException)

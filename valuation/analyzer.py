@@ -4,9 +4,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 
+MIN_SCORE_COVERAGE = 0.70
+
+
 # ═══════════════════════════════════════════════════
 # 輔助函數
 # ═══════════════════════════════════════════════════
+
 
 def _quarter_ordinal(year: int, quarter: int) -> int:
     return year * 4 + quarter - 1
@@ -15,13 +19,20 @@ def _quarter_ordinal(year: int, quarter: int) -> int:
 def _is_consecutive_quarters(window: List[Dict[str, Any]]) -> bool:
     if not window:
         return False
-    ordinals = [_quarter_ordinal(int(item["year"]), int(item["quarter"])) for item in window]
-    return all(current - previous == 1 for previous, current in zip(ordinals, ordinals[1:]))
+    ordinals = [
+        _quarter_ordinal(int(item["year"]), int(item["quarter"])) for item in window
+    ]
+    return all(
+        current - previous == 1 for previous, current in zip(ordinals, ordinals[1:])
+    )
 
 
-def _calc_ttm_eps(eps_data: List[Dict[str, Any]]) -> Tuple[Dict[Tuple[int, int], float], List[Dict[str, Any]]]:
+def _calc_ttm_eps(
+    eps_data: List[Dict[str, Any]],
+) -> Tuple[Dict[Tuple[int, int], float], List[Dict[str, Any]]]:
     valid = [
-        item for item in eps_data
+        item
+        for item in eps_data
         if item.get("year") is not None
         and item.get("quarter") in (1, 2, 3, 4)
         and item.get("eps") is not None
@@ -30,7 +41,7 @@ def _calc_ttm_eps(eps_data: List[Dict[str, Any]]) -> Tuple[Dict[Tuple[int, int],
     ttm_map: Dict[Tuple[int, int], float] = {}
     for i in range(len(eps_sorted)):
         if i >= 3:
-            window = eps_sorted[i - 3:i + 1]
+            window = eps_sorted[i - 3 : i + 1]
             if not _is_consecutive_quarters(window):
                 continue
             ttm = sum(float(item["eps"]) for item in window)
@@ -50,10 +61,15 @@ def _filing_available_date(year: int, quarter: int) -> datetime:
     return datetime(year + 1, 3, 31)
 
 
-def _get_ttm_for_date(dt: datetime, ttm_map: Dict[Tuple[int, int], float], eps_sorted: List[Dict[str, Any]]) -> Optional[float]:
+def _get_ttm_for_date(
+    dt: datetime,
+    ttm_map: Dict[Tuple[int, int], float],
+    eps_sorted: List[Dict[str, Any]],
+) -> Optional[float]:
     comparable_dt = dt.replace(tzinfo=None)
     candidates = [
-        (key, value) for key, value in ttm_map.items()
+        (key, value)
+        for key, value in ttm_map.items()
         if _filing_available_date(key[0], key[1]) <= comparable_dt
     ]
     if candidates:
@@ -75,6 +91,7 @@ def _safe_get(info: Dict[str, Any], key: str, default: Any = None) -> Any:
 # ═══════════════════════════════════════════════════
 # 主分析類別
 # ═══════════════════════════════════════════════════
+
 
 class ValuationAnalyzer:
     """台股估值分析引擎 — 整合傳統估值 + 多因子評分 + 風險預警。
@@ -111,28 +128,40 @@ class ValuationAnalyzer:
         "ebit": "EBIT",
     }
 
-    def __init__(self, stock_id: str, eps_data: List[Dict[str, Any]], price_data: Dict[str, Any],
-                 revenue_data: List[Dict[str, Any]], stock_info: Dict[str, Any], price_info: Dict[str, Any],
-                 balance_sheet: Optional["pd.DataFrame"] = None,
-                 financials: Optional["pd.DataFrame"] = None):
+    def __init__(
+        self,
+        stock_id: str,
+        eps_data: List[Dict[str, Any]],
+        price_data: Dict[str, Any],
+        revenue_data: List[Dict[str, Any]],
+        stock_info: Dict[str, Any],
+        price_info: Dict[str, Any],
+        balance_sheet: Optional["pd.DataFrame"] = None,
+        financials: Optional["pd.DataFrame"] = None,
+    ):
         self.stock_id = stock_id
         self.eps_data = eps_data or []
         self.price_data = price_data or {}
         self.revenue_data = revenue_data or []
         self.stock_info = stock_info or {}
         self.price_info = price_info or {}
-        self.is_etf = stock_info.get("is_etf", False) if isinstance(stock_info, dict) else False
+        self.is_etf = (
+            stock_info.get("is_etf", False) if isinstance(stock_info, dict) else False
+        )
         self._pe_percentiles: Dict[str, float] = {}
         self._populate_from_financials(balance_sheet, financials)
         self._compute()
 
-    def _populate_from_financials(self, bs: Optional["pd.DataFrame"],
-                                  fin: Optional["pd.DataFrame"]) -> None:
+    def _populate_from_financials(
+        self, bs: Optional["pd.DataFrame"], fin: Optional["pd.DataFrame"]
+    ) -> None:
         """用 yfinance 財報填補 price_info 缺失的欄位。
 
         yfinance 的 info dict 對台股不提供大部分資產負債表欄位，
         但 balance_sheet / financials DataFrame 有完整資料。
         """
+        provenance = self.price_info.setdefault("_field_provenance", {})
+        fetched_at = datetime.now().astimezone().isoformat()
         if bs is not None and not bs.empty:
             col = bs.columns[0]
             for key, bs_key in self.BS_MAP.items():
@@ -141,6 +170,20 @@ class ValuationAnalyzer:
                         val = bs.loc[bs_key, col]
                         if pd.notna(val):
                             self.price_info[key] = float(val)
+                            provenance[key] = {
+                                "value": float(val),
+                                "source": "Yahoo Finance balance_sheet",
+                                "observed_at": str(pd.Timestamp(col).date()),
+                                "fetched_at": fetched_at,
+                                "unit": "shares"
+                                if key == "sharesOutstanding"
+                                else "TWD",
+                                "currency": None
+                                if key == "sharesOutstanding"
+                                else "TWD",
+                                "status": "fallback",
+                                "note": "官方 OpenAPI 未提供此欄位時使用。",
+                            }
 
         if fin is not None and not fin.empty:
             col = fin.columns[0]
@@ -150,6 +193,16 @@ class ValuationAnalyzer:
                         val = fin.loc[fin_key, col]
                         if pd.notna(val):
                             self.price_info[key] = float(val)
+                            provenance[key] = {
+                                "value": float(val),
+                                "source": "Yahoo Finance financials",
+                                "observed_at": str(pd.Timestamp(col).date()),
+                                "fetched_at": fetched_at,
+                                "unit": "TWD",
+                                "currency": "TWD",
+                                "status": "fallback",
+                                "note": "官方 OpenAPI 未提供此欄位時使用。",
+                            }
 
     # ───────────────────────────
     # 內部初始化
@@ -182,10 +235,14 @@ class ValuationAnalyzer:
                 if ttm and ttm > 0:
                     pe = price / ttm
                     self._daily_pe.append(pe)
-            self._price_series = pd.Series(series_values, index=series_index, dtype=float).sort_index()
+            self._price_series = pd.Series(
+                series_values, index=series_index, dtype=float
+            ).sort_index()
 
         self._pe_arr = np.array(self._daily_pe) if self._daily_pe else np.array([])
-        self._price_arr = np.array(self._daily_prices) if self._daily_prices else np.array([])
+        self._price_arr = (
+            np.array(self._daily_prices) if self._daily_prices else np.array([])
+        )
 
         if len(self._pe_arr) >= 60:
             self._pe_percentiles = {
@@ -227,7 +284,9 @@ class ValuationAnalyzer:
             return {
                 "ttm_eps": ttm,
                 "current_price": self.current_price,
-                "current_pe": round(self.current_price / ttm, 2) if self.current_price and ttm else None,
+                "current_pe": round(self.current_price / ttm, 2)
+                if self.current_price and ttm
+                else None,
                 "cheap": None,
                 "fair": None,
                 "expensive": None,
@@ -244,11 +303,13 @@ class ValuationAnalyzer:
         eps_growth = self._eps_growth_rate
         if eps_growth is not None:
             adjustment = max(-0.2, min(0.5, eps_growth))
-            adjusted_multiples.update({
-                "p25": round(p["p25"] * (1 + adjustment * 0.5), 2),
-                "p50": round(p["p50"] * (1 + adjustment * 0.8), 2),
-                "p75": round(p["p75"] * (1 + adjustment), 2),
-            })
+            adjusted_multiples.update(
+                {
+                    "p25": round(p["p25"] * (1 + adjustment * 0.5), 2),
+                    "p50": round(p["p50"] * (1 + adjustment * 0.8), 2),
+                    "p75": round(p["p75"] * (1 + adjustment), 2),
+                }
+            )
         cheap = round(ttm * adjusted_multiples["p25"], 2)
         fair = round(ttm * adjusted_multiples["p50"], 2)
         expensive = round(ttm * adjusted_multiples["p75"], 2)
@@ -256,7 +317,9 @@ class ValuationAnalyzer:
         return {
             "ttm_eps": ttm,
             "current_price": self.current_price,
-            "current_pe": round(self.current_price / ttm, 2) if self.current_price and ttm else None,
+            "current_pe": round(self.current_price / ttm, 2)
+            if self.current_price and ttm
+            else None,
             "pe_p25": historical_multiples["p25"],
             "pe_p50": historical_multiples["p50"],
             "pe_p75": historical_multiples["p75"],
@@ -277,7 +340,9 @@ class ValuationAnalyzer:
     # 模組 2：安全邊際（波動率折扣）
     # ═══════════════════════════════════════════
 
-    def get_margin_of_safety(self, fair_price: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    def get_margin_of_safety(
+        self, fair_price: Optional[float] = None
+    ) -> Optional[Dict[str, Any]]:
         if fair_price is None:
             r = self.get_fair_price_range()
             if r and r.get("fair"):
@@ -288,7 +353,11 @@ class ValuationAnalyzer:
             return None
         discount = self._suggest_discount()
         safe_buy = round(fair_price * discount, 2)
-        mos_pct = round((fair_price - self.current_price) / fair_price * 100, 1) if fair_price else None
+        mos_pct = (
+            round((fair_price - self.current_price) / fair_price * 100, 1)
+            if fair_price
+            else None
+        )
         return {
             "fair_price": fair_price,
             "current_price": self.current_price,
@@ -315,8 +384,12 @@ class ValuationAnalyzer:
             return 0.25
         log_prices = np.log(prices[prices > 0])
         log_returns = log_prices.diff().dropna()
-        day_gaps = log_prices.index.to_series().diff().dt.total_seconds().div(86400).dropna()
-        normalized = log_returns / np.sqrt(day_gaps.reindex(log_returns.index).clip(lower=1))
+        day_gaps = (
+            log_prices.index.to_series().diff().dt.total_seconds().div(86400).dropna()
+        )
+        normalized = log_returns / np.sqrt(
+            day_gaps.reindex(log_returns.index).clip(lower=1)
+        )
         normalized = normalized.replace([np.inf, -np.inf], np.nan).dropna()
         if len(normalized) < 5:
             return 0.25
@@ -335,18 +408,34 @@ class ValuationAnalyzer:
         eps_growth = self._calc_eps_growth_rate()
         growth_fields = {
             "eps_growth_rate": round(eps_growth, 4) if eps_growth is not None else None,
-            "eps_growth_decimal": round(eps_growth, 4) if eps_growth is not None else None,
-            "eps_growth_pct": round(eps_growth * 100, 2) if eps_growth is not None else None,
+            "eps_growth_decimal": round(eps_growth, 4)
+            if eps_growth is not None
+            else None,
+            "eps_growth_pct": round(eps_growth * 100, 2)
+            if eps_growth is not None
+            else None,
         }
         if not current_pe or current_pe <= 0:
-            return {"peg": None, "pe": None, **growth_fields,
-                    "verdict": "本益比數據不足，無法計算 PEG"}
+            return {
+                "peg": None,
+                "pe": None,
+                **growth_fields,
+                "verdict": "本益比數據不足，無法計算 PEG",
+            }
         if eps_growth is None:
-            return {"peg": None, "pe": round(current_pe, 2), **growth_fields,
-                    "verdict": "需要兩組完整且連續的四季 EPS 才能計算成長率"}
+            return {
+                "peg": None,
+                "pe": round(current_pe, 2),
+                **growth_fields,
+                "verdict": "需要兩組完整且連續的四季 EPS 才能計算成長率",
+            }
         if eps_growth <= 0:
-            return {"peg": None, "pe": round(current_pe, 2), **growth_fields,
-                    "verdict": "EPS 成長率為負或零，PEG 不具參考意義"}
+            return {
+                "peg": None,
+                "pe": round(current_pe, 2),
+                **growth_fields,
+                "verdict": "EPS 成長率為負或零，PEG 不具參考意義",
+            }
         peg = round(current_pe / (eps_growth * 100), 2)
         if peg < 1:
             verdict = "偏低（可能被低估）"
@@ -354,7 +443,12 @@ class ValuationAnalyzer:
             verdict = "合理"
         else:
             verdict = "偏高（注意估值風險）"
-        return {"peg": peg, "pe": round(current_pe, 2), **growth_fields, "verdict": verdict}
+        return {
+            "peg": peg,
+            "pe": round(current_pe, 2),
+            **growth_fields,
+            "verdict": verdict,
+        }
 
     def _calc_eps_growth_rate(self) -> Optional[float]:
         if len(self.eps_sorted) < 8:
@@ -398,8 +492,12 @@ class ValuationAnalyzer:
                 break
             streak_values.append(float(record["yoy"]))
             previous_ordinal = ordinal
-        consecutive_positive = self._count_consecutive_positive(np.array(list(reversed(streak_values))))
-        consecutive_negative = self._count_consecutive_negative(np.array(list(reversed(streak_values))))
+        consecutive_positive = self._count_consecutive_positive(
+            np.array(list(reversed(streak_values)))
+        )
+        consecutive_negative = self._count_consecutive_negative(
+            np.array(list(reversed(streak_values)))
+        )
 
         slope = None
         if len(yoy_arr) >= 6:
@@ -428,7 +526,9 @@ class ValuationAnalyzer:
     def _sma(self, arr, window):
         if len(arr) < window:
             return list(arr)
-        return [float(np.mean(arr[i - window:i])) for i in range(window, len(arr) + 1)]
+        return [
+            float(np.mean(arr[i - window : i])) for i in range(window, len(arr) + 1)
+        ]
 
     def _count_consecutive_positive(self, arr):
         count = 0
@@ -466,7 +566,7 @@ class ValuationAnalyzer:
     # ═════════════════════════════════════════════════════════
 
     def calculate_health_score(self) -> Dict[str, Any]:
-        """Return a score only when at least half of the weighted inputs exist."""
+        """Return a score only when enough weighted inputs exist for a useful summary."""
         fair = self.get_fair_price_range()
         peg = self.get_peg()
         rev = self.assess_revenue_growth()
@@ -478,15 +578,63 @@ class ValuationAnalyzer:
             )
         )
         definitions = {
-            "growth": (0.22, rev is not None or _safe_get(self.price_info, "earningsGrowth") is not None or peg.get("eps_growth_rate") is not None, self._score_growth(rev, peg)),
-            "valuation": (0.20, fair is not None and (fair.get("current_pe") is not None or _safe_get(self.price_info, "priceToBook") is not None), self._score_valuation(fair)),
-            "profitability": (0.18, any(_safe_get(self.price_info, key) is not None for key in ("returnOnEquity", "profitMargins", "returnOnAssets")), self._score_profitability()),
-            "quality": (0.15, self._calc_piotroski_f_score() is not None or all(_safe_get(self.price_info, key) is not None for key in ("operatingCashflow", "netIncomeToCommon")), self._score_quality()),
+            "growth": (
+                0.22,
+                rev is not None
+                or _safe_get(self.price_info, "earningsGrowth") is not None
+                or peg.get("eps_growth_rate") is not None,
+                self._score_growth(rev, peg),
+            ),
+            "valuation": (
+                0.20,
+                fair is not None
+                and (
+                    fair.get("current_pe") is not None
+                    or _safe_get(self.price_info, "priceToBook") is not None
+                ),
+                self._score_valuation(fair),
+            ),
+            "profitability": (
+                0.18,
+                any(
+                    _safe_get(self.price_info, key) is not None
+                    for key in ("returnOnEquity", "profitMargins", "returnOnAssets")
+                ),
+                self._score_profitability(),
+            ),
+            "quality": (
+                0.15,
+                self._calc_piotroski_f_score() is not None
+                or all(
+                    _safe_get(self.price_info, key) is not None
+                    for key in ("operatingCashflow", "netIncomeToCommon")
+                ),
+                self._score_quality(),
+            ),
             "momentum": (0.12, has_price_momentum, self._score_momentum()),
-            "stability": (0.08, len(self._price_series) >= 10 or _safe_get(self.price_info, "debtToEquity") is not None, self._score_stability()),
-            "cashflow": (0.05, any(_safe_get(self.price_info, key) is not None for key in ("freeCashflow", "operatingCashflow", "totalCash", "totalDebt")), self._score_cashflow()),
+            "stability": (
+                0.08,
+                len(self._price_series) >= 10
+                or _safe_get(self.price_info, "debtToEquity") is not None,
+                self._score_stability(),
+            ),
+            "cashflow": (
+                0.05,
+                any(
+                    _safe_get(self.price_info, key) is not None
+                    for key in (
+                        "freeCashflow",
+                        "operatingCashflow",
+                        "totalCash",
+                        "totalDebt",
+                    )
+                ),
+                self._score_cashflow(),
+            ),
         }
-        available_weight = sum(weight for weight, available, _ in definitions.values() if available)
+        available_weight = sum(
+            weight for weight, available, _ in definitions.values() if available
+        )
         coverage = round(available_weight, 2)
         components = {
             name: {
@@ -496,7 +644,7 @@ class ValuationAnalyzer:
             }
             for name, (weight, available, score) in definitions.items()
         }
-        if available_weight < 0.50:
+        if available_weight < MIN_SCORE_COVERAGE:
             return {
                 "total_score": None,
                 "level": "資料不足",
@@ -504,7 +652,11 @@ class ValuationAnalyzer:
                 "components": components,
             }
         total = round(
-            sum(score * weight for weight, available, score in definitions.values() if available)
+            sum(
+                score * weight
+                for weight, available, score in definitions.values()
+                if available
+            )
             / available_weight,
             1,
         )
@@ -577,7 +729,12 @@ class ValuationAnalyzer:
             elif pb > 5:
                 score -= 8
 
-        if fair and fair.get("current_price") and fair.get("cheap") and fair.get("expensive"):
+        if (
+            fair
+            and fair.get("current_price")
+            and fair.get("cheap")
+            and fair.get("expensive")
+        ):
             cp = fair["current_price"]
             cheap = fair["cheap"]
             expensive = fair["expensive"]
@@ -624,15 +781,18 @@ class ValuationAnalyzer:
         score = 50.0
         df_3m = self.price_data.get("3m", {}).get("df")
         df_6m = self.price_data.get("6m", {}).get("df")
-        _c = lambda s: s["close"] if "close" in s else s["Close"]
+
+        def close_series(frame):
+            return frame["close"] if "close" in frame else frame["Close"]
+
         if df_3m is not None and not df_3m.empty:
-            p0 = float(_c(df_3m).iloc[0])
-            p1 = float(_c(df_3m).iloc[-1])
+            p0 = float(close_series(df_3m).iloc[0])
+            p1 = float(close_series(df_3m).iloc[-1])
             ret_3m = (p1 - p0) / p0 * 100 if p0 > 0 else 0
             score += _clamp(ret_3m * 1.0, -20, 20)
         if df_6m is not None and not df_6m.empty:
-            p0 = float(_c(df_6m).iloc[0])
-            p1 = float(_c(df_6m).iloc[-1])
+            p0 = float(close_series(df_6m).iloc[0])
+            p1 = float(close_series(df_6m).iloc[-1])
             ret_6m = (p1 - p0) / p0 * 100 if p0 > 0 else 0
             score += _clamp(ret_6m * 0.6, -15, 15)
         return _clamp(score, 0, 100)
@@ -732,11 +892,13 @@ class ValuationAnalyzer:
 
         def add(name: str, values: Tuple[Any, ...], passed: bool) -> None:
             available = all(value is not None for value in values)
-            signals.append({
-                "name": name,
-                "available": available,
-                "passed": bool(passed) if available else None,
-            })
+            signals.append(
+                {
+                    "name": name,
+                    "available": available,
+                    "passed": bool(passed) if available else None,
+                }
+            )
 
         roa = _safe_get(pi, "returnOnAssets")
         roa_prev = _safe_get(pi, "lastYearReturnOnAssets")
@@ -744,8 +906,16 @@ class ValuationAnalyzer:
         net_income = _safe_get(pi, "netIncomeToCommon")
         add("positive_roa", (roa,), roa is not None and roa > 0)
         add("positive_operating_cashflow", (ocf,), ocf is not None and ocf > 0)
-        add("improving_roa", (roa, roa_prev), roa is not None and roa_prev is not None and roa > roa_prev)
-        add("cashflow_exceeds_net_income", (ocf, net_income), ocf is not None and net_income is not None and ocf > net_income)
+        add(
+            "improving_roa",
+            (roa, roa_prev),
+            roa is not None and roa_prev is not None and roa > roa_prev,
+        )
+        add(
+            "cashflow_exceeds_net_income",
+            (ocf, net_income),
+            ocf is not None and net_income is not None and ocf > net_income,
+        )
 
         debt = _safe_get(pi, "totalDebt")
         assets = _safe_get(pi, "totalAssets")
@@ -755,7 +925,8 @@ class ValuationAnalyzer:
             "lower_leverage",
             (debt, assets, debt_prev, assets_prev),
             all(value is not None and value > 0 for value in (assets, assets_prev))
-            and debt is not None and debt_prev is not None
+            and debt is not None
+            and debt_prev is not None
             and debt / assets < debt_prev / assets_prev,
         )
 
@@ -765,19 +936,41 @@ class ValuationAnalyzer:
         current_liabilities_prev = _safe_get(pi, "lastYearCurrentLiabilities")
         add(
             "improving_current_ratio",
-            (current_assets, current_liabilities, current_assets_prev, current_liabilities_prev),
-            all(value is not None and value > 0 for value in (current_liabilities, current_liabilities_prev))
-            and current_assets is not None and current_assets_prev is not None
-            and current_assets / current_liabilities > current_assets_prev / current_liabilities_prev,
+            (
+                current_assets,
+                current_liabilities,
+                current_assets_prev,
+                current_liabilities_prev,
+            ),
+            all(
+                value is not None and value > 0
+                for value in (current_liabilities, current_liabilities_prev)
+            )
+            and current_assets is not None
+            and current_assets_prev is not None
+            and current_assets / current_liabilities
+            > current_assets_prev / current_liabilities_prev,
         )
 
         shares = _safe_get(pi, "sharesOutstanding")
         shares_prev = _safe_get(pi, "lastYearSharesOutstanding")
-        add("no_new_shares", (shares, shares_prev), shares is not None and shares_prev is not None and shares <= shares_prev * 1.02)
+        add(
+            "no_new_shares",
+            (shares, shares_prev),
+            shares is not None
+            and shares_prev is not None
+            and shares <= shares_prev * 1.02,
+        )
 
         gross_margin = _safe_get(pi, "grossMargins")
         gross_margin_prev = _safe_get(pi, "lastYearGrossMargins")
-        add("improving_gross_margin", (gross_margin, gross_margin_prev), gross_margin is not None and gross_margin_prev is not None and gross_margin > gross_margin_prev)
+        add(
+            "improving_gross_margin",
+            (gross_margin, gross_margin_prev),
+            gross_margin is not None
+            and gross_margin_prev is not None
+            and gross_margin > gross_margin_prev,
+        )
 
         revenue = _safe_get(pi, "totalRevenue")
         revenue_prev = _safe_get(pi, "lastYearTotalRevenue")
@@ -785,7 +978,8 @@ class ValuationAnalyzer:
             "improving_asset_turnover",
             (revenue, assets, revenue_prev, assets_prev),
             all(value is not None and value > 0 for value in (assets, assets_prev))
-            and revenue is not None and revenue_prev is not None
+            and revenue is not None
+            and revenue_prev is not None
             and revenue / assets > revenue_prev / assets_prev,
         )
 
@@ -824,14 +1018,25 @@ class ValuationAnalyzer:
 
     @property
     def _is_financial(self) -> bool:
-        sector = (_safe_get(self.stock_info, "sector", "")
-                  or _safe_get(self.price_info, "sector", ""))
-        industry = (_safe_get(self.stock_info, "industry", "")
-                    or _safe_get(self.price_info, "industry", ""))
+        sector = _safe_get(self.stock_info, "sector", "") or _safe_get(
+            self.price_info, "sector", ""
+        )
+        industry = _safe_get(self.stock_info, "industry", "") or _safe_get(
+            self.price_info, "industry", ""
+        )
         value = f"{sector} {industry}".lower()
         keywords = (
-            "financial", "bank", "insurance", "asset management", "investment",
-            "金融", "銀行", "保險", "證券", "金控", "投信",
+            "financial",
+            "bank",
+            "insurance",
+            "asset management",
+            "investment",
+            "金融",
+            "銀行",
+            "保險",
+            "證券",
+            "金控",
+            "投信",
         )
         return any(keyword in value for keyword in keywords)
 
@@ -841,8 +1046,14 @@ class ValuationAnalyzer:
             return None
         pi = self.price_info
         fields = (
-            "totalAssets", "currentAssets", "currentLiabilities", "retainedEarnings",
-            "ebit", "marketCap", "totalLiabilities", "totalRevenue",
+            "totalAssets",
+            "currentAssets",
+            "currentLiabilities",
+            "retainedEarnings",
+            "ebit",
+            "marketCap",
+            "totalLiabilities",
+            "totalRevenue",
         )
         values = {field: _safe_get(pi, field) for field in fields}
         if any(value is None for value in values.values()):
@@ -947,7 +1158,8 @@ class ValuationAnalyzer:
             "graham": (0.15, graham_score),
         }
         available_weight = sum(
-            weight for weight, component_score in definitions.values()
+            weight
+            for weight, component_score in definitions.values()
             if component_score is not None
         )
         effective_coverage = (
@@ -992,11 +1204,14 @@ class ValuationAnalyzer:
                 "components": components,
             }
 
-        total = sum(
-            component_score * weight
-            for weight, component_score in definitions.values()
-            if component_score is not None
-        ) / available_weight
+        total = (
+            sum(
+                component_score * weight
+                for weight, component_score in definitions.values()
+                if component_score is not None
+            )
+            / available_weight
+        )
         if total >= 80:
             rating, color = "A", "#10b981"
         elif total >= 60:
@@ -1034,95 +1249,209 @@ class ValuationAnalyzer:
         # ── 營收衰退 ──
         if rev:
             if rev.get("consecutive_negative_months", 0) >= 3:
-                warnings.append({"type": "營收衰退", "level": "red", "horizon": "mid",
-                                 "msg": f"連續 {rev['consecutive_negative_months']} 個月營收年增率為負"})
+                warnings.append(
+                    {
+                        "type": "營收衰退",
+                        "level": "red",
+                        "horizon": "mid",
+                        "msg": f"連續 {rev['consecutive_negative_months']} 個月營收年增率為負",
+                    }
+                )
             elif rev.get("consecutive_negative_months", 0) >= 1:
-                warnings.append({"type": "營收衰退", "level": "yellow", "horizon": "mid",
-                                 "msg": "近月營收年增率出現負值"})
+                warnings.append(
+                    {
+                        "type": "營收衰退",
+                        "level": "yellow",
+                        "horizon": "mid",
+                        "msg": "近月營收年增率出現負值",
+                    }
+                )
             if rev.get("decelerating"):
-                warnings.append({"type": "成長放緩", "level": "yellow", "horizon": "mid",
-                                 "msg": "營收年增率動能減弱"})
+                warnings.append(
+                    {
+                        "type": "成長放緩",
+                        "level": "yellow",
+                        "horizon": "mid",
+                        "msg": "營收年增率動能減弱",
+                    }
+                )
 
         # ── 估值風險 ──
         if fair and fair.get("current_pe") and fair.get("pe_p75"):
             if fair["current_pe"] > fair["pe_p75"] * 1.2:
-                warnings.append({"type": "高估值", "level": "red", "horizon": "mid",
-                                 "msg": f"本益比 {fair['current_pe']} 顯著高於歷史 75% 分位 {fair['pe_p75']}"})
+                warnings.append(
+                    {
+                        "type": "高估值",
+                        "level": "red",
+                        "horizon": "mid",
+                        "msg": f"本益比 {fair['current_pe']} 顯著高於歷史 75% 分位 {fair['pe_p75']}",
+                    }
+                )
             elif fair["current_pe"] > fair["pe_p75"]:
-                warnings.append({"type": "高估值", "level": "yellow", "horizon": "mid",
-                                 "msg": f"本益比 {fair['current_pe']} 高於歷史 75% 分位 {fair['pe_p75']}"})
+                warnings.append(
+                    {
+                        "type": "高估值",
+                        "level": "yellow",
+                        "horizon": "mid",
+                        "msg": f"本益比 {fair['current_pe']} 高於歷史 75% 分位 {fair['pe_p75']}",
+                    }
+                )
 
         if fair and fair.get("current_pe") and fair.get("pe_p25"):
             if fair["current_pe"] < fair["pe_p25"] * 0.8:
-                warnings.append({"type": "估值偏低", "level": "green", "horizon": "mid",
-                                 "msg": "本益比顯著低於歷史區間，注意是否有基本面疑慮"})
+                warnings.append(
+                    {
+                        "type": "估值偏低",
+                        "level": "green",
+                        "horizon": "mid",
+                        "msg": "本益比顯著低於歷史區間，注意是否有基本面疑慮",
+                    }
+                )
 
         # ── PEG 過高 ──
         if peg and peg.get("peg") is not None and peg["peg"] > 3:
-            warnings.append({"type": "PEG 過高", "level": "yellow", "horizon": "mid",
-                             "msg": f"PEG {peg['peg']} > 3，成長無法支撐當前估值"})
+            warnings.append(
+                {
+                    "type": "PEG 過高",
+                    "level": "yellow",
+                    "horizon": "mid",
+                    "msg": f"PEG {peg['peg']} > 3，成長無法支撐當前估值",
+                }
+            )
 
         # ── 波動風險 ──
         vol = self._estimate_volatility()
         if vol > 0.5:
-            warnings.append({"type": "波動過大", "level": "red", "horizon": "short",
-                             "msg": f"年化波動率 {vol*100:.0f}%，短線風險偏高"})
+            warnings.append(
+                {
+                    "type": "波動過大",
+                    "level": "red",
+                    "horizon": "short",
+                    "msg": f"年化波動率 {vol * 100:.0f}%，短線風險偏高",
+                }
+            )
         elif vol > 0.35:
-            warnings.append({"type": "波動較大", "level": "yellow", "horizon": "short",
-                             "msg": f"年化波動率 {vol*100:.0f}%"})
+            warnings.append(
+                {
+                    "type": "波動較大",
+                    "level": "yellow",
+                    "horizon": "short",
+                    "msg": f"年化波動率 {vol * 100:.0f}%",
+                }
+            )
 
         # ── EPS 衰退 ──
         eps_growth = self._calc_eps_growth_rate()
         if eps_growth is not None and eps_growth < -0.1:
-            warnings.append({"type": "EPS 下滑", "level": "red", "horizon": "mid",
-                             "msg": f"近四季 EPS 較前四季衰退 {abs(eps_growth)*100:.0f}%"})
+            warnings.append(
+                {
+                    "type": "EPS 下滑",
+                    "level": "red",
+                    "horizon": "mid",
+                    "msg": f"近四季 EPS 較前四季衰退 {abs(eps_growth) * 100:.0f}%",
+                }
+            )
 
         # ── Piotroski 低分（品質風險）──
         if f_score is not None and f_score <= 2:
-            warnings.append({"type": "財務品質", "level": "red", "horizon": "long",
-                             "msg": f"Piotroski F-Score 僅 {f_score}/9，財務體質需警惕"})
+            warnings.append(
+                {
+                    "type": "財務品質",
+                    "level": "red",
+                    "horizon": "long",
+                    "msg": f"Piotroski F-Score 僅 {f_score}/9，財務體質需警惕",
+                }
+            )
         elif f_score is not None and f_score <= 3:
-            warnings.append({"type": "財務品質", "level": "yellow", "horizon": "long",
-                             "msg": f"Piotroski F-Score 僅 {f_score}/9，財務基本面偏弱"})
+            warnings.append(
+                {
+                    "type": "財務品質",
+                    "level": "yellow",
+                    "horizon": "long",
+                    "msg": f"Piotroski F-Score 僅 {f_score}/9，財務基本面偏弱",
+                }
+            )
 
         # ── Altman Z-Score（破產風險）──
         if z_score is not None:
             if z_score < 1.81:
-                warnings.append({"type": "財務壓力", "level": "red", "horizon": "long",
-                                 "msg": f"Altman Z-Score {z_score}，財務結構需警惕"})
+                warnings.append(
+                    {
+                        "type": "財務壓力",
+                        "level": "red",
+                        "horizon": "long",
+                        "msg": f"Altman Z-Score {z_score}，財務結構需警惕",
+                    }
+                )
             elif z_score < 2.99:
-                warnings.append({"type": "財務壓力", "level": "yellow", "horizon": "long",
-                                 "msg": f"Altman Z-Score {z_score}，財務結構處於灰色地帶"})
+                warnings.append(
+                    {
+                        "type": "財務壓力",
+                        "level": "yellow",
+                        "horizon": "long",
+                        "msg": f"Altman Z-Score {z_score}，財務結構處於灰色地帶",
+                    }
+                )
             else:
-                warnings.append({"type": "財務穩健", "level": "green", "horizon": "long",
-                                 "msg": f"Altman Z-Score {z_score}，財務結構穩健"})
+                warnings.append(
+                    {
+                        "type": "財務穩健",
+                        "level": "green",
+                        "horizon": "long",
+                        "msg": f"Altman Z-Score {z_score}，財務結構穩健",
+                    }
+                )
 
         # ── Graham Number 警示 ──
         if graham is not None and self.current_price > 0:
             if self.current_price > graham * 1.5:
-                warnings.append({"type": "葛拉漢警訊", "level": "yellow", "horizon": "mid",
-                                 "msg": f"股價 {self.current_price} 顯著高於 Graham Number {graham}，價值投資角度偏貴"})
+                warnings.append(
+                    {
+                        "type": "葛拉漢警訊",
+                        "level": "yellow",
+                        "horizon": "mid",
+                        "msg": f"股價 {self.current_price} 顯著高於 Graham Number {graham}，價值投資角度偏貴",
+                    }
+                )
 
         # ── 流動性風險 ──
         cash = _safe_get(self.price_info, "totalCash")
         debt = _safe_get(self.price_info, "totalDebt")
         if cash is not None and debt is not None and debt > 0:
             if cash / debt < 0.2:
-                warnings.append({"type": "流動性", "level": "yellow", "horizon": "long",
-                                 "msg": "現金/負債比率偏低，留意流動性風險"})
+                warnings.append(
+                    {
+                        "type": "流動性",
+                        "level": "yellow",
+                        "horizon": "long",
+                        "msg": "現金/負債比率偏低，留意流動性風險",
+                    }
+                )
 
         # ── 獲利能力衰退 ──
         roa = _safe_get(self.price_info, "returnOnAssets")
         roa_prev = _safe_get(self.price_info, "lastYearReturnOnAssets")
         if roa is not None and roa_prev is not None:
             if roa < roa_prev * 0.7 and roa_prev > 0:
-                warnings.append({"type": "獲利衰退", "level": "yellow", "horizon": "mid",
-                                 "msg": "ROA 較去年同期顯著下滑"})
+                warnings.append(
+                    {
+                        "type": "獲利衰退",
+                        "level": "yellow",
+                        "horizon": "mid",
+                        "msg": "ROA 較去年同期顯著下滑",
+                    }
+                )
 
         # ── 健康度總評警示 ──
         if health["total_score"] is not None and health["total_score"] < 45:
-            warnings.append({"type": "綜合健康度", "level": "red", "horizon": "mid",
-                             "msg": f"綜合健康度僅 {health['total_score']} 分，整體表現偏弱"})
+            warnings.append(
+                {
+                    "type": "綜合健康度",
+                    "level": "red",
+                    "horizon": "mid",
+                    "msg": f"綜合健康度僅 {health['total_score']} 分，整體表現偏弱",
+                }
+            )
 
         return warnings
 
@@ -1146,11 +1475,15 @@ class ValuationAnalyzer:
         # 整體評級
         lines.append(f"【{name} 估值分析】")
         if rating.get("score") is None:
-            lines.append(f"綜合評級：資料不足（覆蓋率 {rating.get('coverage', 0) * 100:.0f}%）")
+            lines.append(
+                f"綜合評級：資料不足（覆蓋率 {rating.get('coverage', 0) * 100:.0f}%）"
+            )
         else:
             lines.append(f"綜合評級：{rating['rating']}（{rating['score']} 分）")
         if score.get("total_score") is None:
-            lines.append(f"健康評分：資料不足（覆蓋率 {score.get('coverage', 0) * 100:.0f}%）")
+            lines.append(
+                f"健康評分：資料不足（覆蓋率 {score.get('coverage', 0) * 100:.0f}%）"
+            )
         else:
             lines.append(f"健康評分：{score['total_score']} 分（{score['level']}）")
 
@@ -1162,7 +1495,9 @@ class ValuationAnalyzer:
             lines.append(f"Piotroski F-Score：資料不足（9 項中 {coverage} 項可計算）")
         if graham:
             if self.current_price < graham:
-                lines.append(f"Graham Number：{graham} 元（目前股價低於葛拉漢數字，價值投資角度具安全邊際）")
+                lines.append(
+                    f"Graham Number：{graham} 元（目前股價低於葛拉漢數字，價值投資角度具安全邊際）"
+                )
             else:
                 lines.append(f"Graham Number：{graham} 元（目前股價高於葛拉漢數字）")
 
@@ -1180,7 +1515,9 @@ class ValuationAnalyzer:
                 zone = "介於合理價與昂貴價之間"
             else:
                 zone = "高於昂貴價"
-            lines.append(f"合理價區間：{cheap:.0f} ~ {fair_p:.0f} ~ {exp:.0f}（便宜/合理/昂貴）")
+            lines.append(
+                f"合理價區間：{cheap:.0f} ~ {fair_p:.0f} ~ {exp:.0f}（便宜/合理/昂貴）"
+            )
             lines.append(f"目前股價 {cp:.0f} 元，{zone}。")
 
         # PE 分析
@@ -1220,7 +1557,9 @@ class ValuationAnalyzer:
             elif rev.get("decelerating"):
                 lines.append("營收動能放緩，需關注是否為短期現象。")
             if rev.get("consecutive_positive_months", 0) >= 6:
-                lines.append(f"連續 {rev['consecutive_positive_months']} 個月營收正成長，表現穩定。")
+                lines.append(
+                    f"連續 {rev['consecutive_positive_months']} 個月營收正成長，表現穩定。"
+                )
 
         # 安全邊際
         mos = self.get_margin_of_safety()
@@ -1234,11 +1573,14 @@ class ValuationAnalyzer:
         # 風險摘要
         red = [w for w in warnings if w["level"] == "red"]
         yellow = [w for w in warnings if w["level"] == "yellow"]
-        green = [w for w in warnings if w["level"] == "green"]
         if red:
-            lines.append(f"風險提醒：發現 {len(red)} 項紅燈警訊（{', '.join(w['type'] for w in red)}），請審慎評估。")
+            lines.append(
+                f"風險提醒：發現 {len(red)} 項紅燈警訊（{', '.join(w['type'] for w in red)}），請審慎評估。"
+            )
         if yellow:
-            lines.append(f"注意：{len(yellow)} 項黃燈觀察（{', '.join(w['type'] for w in yellow)}）。")
+            lines.append(
+                f"注意：{len(yellow)} 項黃燈觀察（{', '.join(w['type'] for w in yellow)}）。"
+            )
 
         return "\n".join(lines)
 
@@ -1319,7 +1661,7 @@ class ValuationAnalyzer:
             weighted_total += component["score"] * weight
             available_weight += weight
         coverage = round(available_weight, 2)
-        if available_weight < 0.50:
+        if available_weight < MIN_SCORE_COVERAGE:
             return {
                 "total_score": None,
                 "level": "資料不足",
@@ -1375,29 +1717,59 @@ class ValuationAnalyzer:
 
         er = _safe_get(pi, "annualReportExpenseRatio")
         if er is not None and er > 0.01:
-            warnings.append({"type": "費用率偏高", "level": "yellow", "horizon": "long",
-                             "msg": f"費用率 {(er*100):.2f}% > 1%，長期持有成本偏高"})
+            warnings.append(
+                {
+                    "type": "費用率偏高",
+                    "level": "yellow",
+                    "horizon": "long",
+                    "msg": f"費用率 {(er * 100):.2f}% > 1%，長期持有成本偏高",
+                }
+            )
 
         nav = _safe_get(pi, "navPrice")
         price = _safe_get(pi, "currentPrice")
         if nav and price and nav > 0:
             premium = (price - nav) / nav * 100
             if premium > 2:
-                warnings.append({"type": "溢價過大", "level": "yellow", "horizon": "short",
-                                 "msg": f"溢價 {premium:.2f}% > 2%，買進成本偏高"})
+                warnings.append(
+                    {
+                        "type": "溢價過大",
+                        "level": "yellow",
+                        "horizon": "short",
+                        "msg": f"溢價 {premium:.2f}% > 2%，買進成本偏高",
+                    }
+                )
             elif premium < -2:
-                warnings.append({"type": "折價過大", "level": "green", "horizon": "short",
-                                 "msg": f"折價 {abs(premium):.2f}%，可留意買點"})
+                warnings.append(
+                    {
+                        "type": "折價過大",
+                        "level": "green",
+                        "horizon": "short",
+                        "msg": f"折價 {abs(premium):.2f}%，可留意買點",
+                    }
+                )
 
         aum = _safe_get(pi, "totalAssets")
         if aum is not None and aum < 5e9:
-            warnings.append({"type": "規模偏小", "level": "yellow", "horizon": "long",
-                             "msg": "基金規模偏小，留意清算風險"})
+            warnings.append(
+                {
+                    "type": "規模偏小",
+                    "level": "yellow",
+                    "horizon": "long",
+                    "msg": "基金規模偏小，留意清算風險",
+                }
+            )
 
         avg_vol = _safe_get(pi, "averageVolume")
         if avg_vol is not None and avg_vol < 100e3:
-            warnings.append({"type": "流動性低", "level": "yellow", "horizon": "short",
-                             "msg": "日均成交量偏低，買賣價差可能較大"})
+            warnings.append(
+                {
+                    "type": "流動性低",
+                    "level": "yellow",
+                    "horizon": "short",
+                    "msg": "日均成交量偏低，買賣價差可能較大",
+                }
+            )
 
         return warnings
 
@@ -1407,26 +1779,33 @@ class ValuationAnalyzer:
         name = self.stock_info.get("name", self.stock_id)
         rating = self._calculate_etf_rating()
         parts = [f"【{name} ETF 分析】"]
-        parts.append(f"綜合評級：{rating['rating']}（{rating['score']} 分）")
+        if rating.get("score") is None:
+            parts.append("綜合評級：資料不足（N/A）")
+        else:
+            parts.append(f"綜合評級：{rating['rating']}（{rating['score']} 分）")
 
         er = _safe_get(pi, "annualReportExpenseRatio")
         if er is not None:
-            parts.append(f"費用率 {(er*100):.2f}% — {'偏低' if er <= 0.005 else '合理' if er <= 0.01 else '偏高'}")
+            parts.append(
+                f"費用率 {(er * 100):.2f}% — {'偏低' if er <= 0.005 else '合理' if er <= 0.01 else '偏高'}"
+            )
 
         nav = _safe_get(pi, "navPrice")
         price = _safe_get(pi, "currentPrice")
         if nav and price and nav > 0:
             premium = (price - nav) / nav * 100
-            parts.append(f"目前 {'溢價' if premium > 0 else '折價'} {abs(premium):.2f}%")
+            parts.append(
+                f"目前 {'溢價' if premium > 0 else '折價'} {abs(premium):.2f}%"
+            )
 
         aum = _safe_get(pi, "totalAssets")
         if aum is not None:
-            aum_str = f"{aum/1e8:,.0f} 億元"
+            aum_str = f"{aum / 1e8:,.0f} 億元"
             parts.append(f"基金規模 {aum_str}")
 
         div_yield = _safe_get(pi, "yield")
         if div_yield is not None:
-            parts.append(f"殖利率 {(div_yield*100):.2f}%")
+            parts.append(f"殖利率 {(div_yield * 100):.2f}%")
 
         parts.append("ETF 不適用個股 PE 估值，請以折溢價與費用率為主要評估依據。")
         return "。".join(parts)
@@ -1441,7 +1820,9 @@ class ValuationAnalyzer:
             etf_rating = self._calculate_etf_rating()
             return {
                 "is_etf": True,
-                "fair_price_range": {"current_price": self.current_price} if self.current_price else None,
+                "fair_price_range": {"current_price": self.current_price}
+                if self.current_price
+                else None,
                 "margin_of_safety": None,
                 "peg": None,
                 "revenue_growth": self.assess_revenue_growth(),
@@ -1465,6 +1846,7 @@ class ValuationAnalyzer:
                 "piotroski_f_score": self._calc_piotroski_f_score(),
                 "piotroski_details": self._calc_piotroski_details(),
                 "altman_z_score": self._calc_altman_z_score(),
+                "altman_status": self._altman_status(self._calc_altman_z_score()),
                 "altman_model": "original_public_manufacturer",
                 "graham_number": self._calc_graham_number(),
             },

@@ -13,7 +13,9 @@ def _plain_text(value: str) -> str:
     return BeautifulSoup(value or "", "lxml").get_text(" ", strip=True)
 
 
-def _rss_items(content: bytes, provider: BaseNewsProvider, query: str, default_source: str) -> list[NewsItem]:
+def _rss_items(
+    content: bytes, provider: BaseNewsProvider, query: str, default_source: str
+) -> list[NewsItem]:
     root = ElementTree.fromstring(content)
     items = []
     for entry in root.iter("item"):
@@ -24,14 +26,16 @@ def _rss_items(content: bytes, provider: BaseNewsProvider, query: str, default_s
         date = provider._normalize_date(entry.findtext("pubDate", "") or "")
         summary = _plain_text(entry.findtext("description", ""))[:300]
         source = _plain_text(entry.findtext("source", "")) or default_source
-        items.append(NewsItem(
-            title=title,
-            publish_date=date,
-            source=source,
-            url=link,
-            summary=summary,
-            matched_keyword=query,
-        ))
+        items.append(
+            NewsItem(
+                title=title,
+                publish_date=date,
+                source=source,
+                url=link,
+                summary=summary,
+                matched_keyword=query,
+            )
+        )
     return items
 
 

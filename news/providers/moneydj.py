@@ -8,4 +8,6 @@ class MoneyDJProvider(BaseNewsProvider):
     priority = 90
 
     def search(self, query: str, stock_info: dict | None = None) -> list[NewsItem]:
-        raise RuntimeError("MoneyDJ provider is disabled pending a stable licensed source")
+        raise RuntimeError(
+            "MoneyDJ provider is disabled pending a stable licensed source"
+        )

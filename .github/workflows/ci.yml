@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pip check
+      - run: python -m pip_audit -r requirements.txt --progress-spinner off
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m pytest -q -p no:cacheprovider
+      - run: node --check static/js/app.js
+      - run: node --check static/js/api.js
+      - run: node --check static/js/dom.js
+      - run: node --check static/js/export.js
+      - run: node --check static/js/render.js
+      - run: node --check static/service-worker.js

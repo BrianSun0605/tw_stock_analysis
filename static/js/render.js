@@ -5,6 +5,10 @@ const componentNames = {
   quality: "品質力", momentum: "價格動能", stability: "穩定性", cashflow: "現金流",
 };
 const signalNames = { positive: "正向", negative: "負向", neutral: "中性" };
+const assetTypeNames = {
+  stock: "公司財務安全", tdr: "公司財務安全", etf: "ETF 結構安全",
+  etn: "ETN 結構安全", reit: "REIT 結構安全", preferred_stock: "特別股財務安全",
+};
 
 function setText(id, value) { byId(id).textContent = value; }
 function metric(label, value, note) {
@@ -16,7 +20,8 @@ function empty(text = "目前沒有可呈現的資料") { return node("p", { cla
 
 function renderHeader(data) {
   const stock = data.stock || {};
-  const rating = data.overall_rating || {};
+  const growth = data.model_assessments?.growth || {};
+  const safety = data.model_assessments?.safety || {};
   setText("stockName", stock.name || "名稱資料不足");
   setText("stockEnglish", stock.name_en || "");
   setText("stockMeta", [stock.stock_id, stock.market, stock.industry].filter(Boolean).join(" · ") || "資料不足");
@@ -25,24 +30,44 @@ function renderHeader(data) {
   setText("stockChange", present(change) ? `單日 ${Number(change) >= 0 ? "+" : ""}${percentPoint(change)}` : "漲跌資料不足");
   byId("stockChange").className = present(change) ? (Number(change) >= 0 ? "positive" : "negative") : "";
   setText("priceDate", stock.price_date ? `價格日期 ${stock.price_date}` : "價格日期未提供");
-  const grade = ["A", "B", "C", "D"].includes(rating.rating) ? rating.rating : "N/A";
-  setText("ratingBadge", grade);
-  byId("ratingBadge").className = `rating ${grade === "N/A" ? "n-a" : grade.toLowerCase()}`;
-  setText("ratingScore", present(rating.score) ? `${number(rating.score, 1)} / 100` : "資料不足");
-  setText("ratingCoverage", present(rating.coverage) ? `資料覆蓋率 ${percentDecimal(rating.coverage, 0)}` : "資料覆蓋率未提供");
+  const setGrade = (prefix, assessment, fallbackText) => {
+    const grade = ["A", "B", "C", "D", "E", "F"].includes(assessment.rating) ? assessment.rating : "N/A";
+    setText(`${prefix}RatingBadge`, grade);
+    byId(`${prefix}RatingBadge`).className = `rating ${grade === "N/A" ? "n-a" : grade.toLowerCase()}`;
+    setText(`${prefix}RatingText`, grade === "N/A" ? fallbackText : `${number(assessment.score, 1)} / 100`);
+  };
+  setGrade("growth", growth, growth.experimental_rating ? `實驗 ${growth.experimental_rating}` : "暫不評級");
+  setText("growthRatingMeta", growth.rating ? `信心 ${growth.confidence || "未標示"}` : "正式評級未通過驗證");
+  setGrade("safety", safety, safety.status === "specialized_model_pending" ? "專用模型待建" : safety.experimental_rating ? `實驗 ${safety.experimental_rating}` : "暫不評級");
+  setText("safetyRatingMeta", safety.rating ? `信心 ${safety.confidence || "未標示"}` : "正式評級尚未完成歷史驗證");
 }
 
 function renderQualityBanner(data) {
   const coverage = data.health_score?.coverage;
   const mapping = data.data_quality?.stock_mapping_source || "unknown";
   const banner = byId("qualityBanner");
-  if (!present(coverage) || Number(coverage) < .5) {
+  if (!present(coverage) || Number(coverage) < .7) {
     banner.className = "quality-banner warning";
-    banner.textContent = `可用資料不足 50%，綜合分數不應作為判斷依據。股票清單：${mapping}。`;
+    banner.textContent = `可用資料不足 70%，綜合分數不應作為判斷依據。股票清單：${mapping}。`;
   } else {
     banner.className = "quality-banner";
     banner.textContent = `本次健康度資料覆蓋率 ${percentDecimal(coverage, 0)}；缺漏維度已標示為「資料不足」，未以零分代替。股票清單：${mapping}。`;
   }
+}
+
+function renderFactsSummary(data) {
+  const provenance = data.data_provenance || {};
+  const quality = data.data_quality || {};
+  const price = provenance.current_price || {};
+  const latestRevenue = provenance.latest_revenue || {};
+  const sourceText = [price.source, latestRevenue.source].filter(Boolean).join("／") || "來源未標示";
+  const statusText = price.status === "fallback" ? "行情使用 Yahoo 備援" : price.status === "stale" ? "資料為舊快照" : "官方／可信資料";
+  replace("factsSummary", [
+    metric("標的與價格日期", `${data.stock?.stock_id || "—"} · ${data.stock?.price_date || "日期不足"}`),
+    metric("主要資料來源", sourceText),
+    metric("備援狀態", statusText),
+    metric("缺漏狀態", present(quality.health_coverage) ? `健康資料覆蓋 ${percentDecimal(quality.health_coverage, 0)}` : "核心資料不足"),
+  ]);
 }
 
 function renderKpis(data) {
@@ -52,7 +77,7 @@ function renderKpis(data) {
   setText("kpiPe", present(fair.current_pe) ? `${number(fair.current_pe)} 倍` : "資料不足");
   setText("kpiFair", money(fair.fair));
   setText("kpiHealth", present(health.score) ? `${number(health.score, 1)} / 100` : "資料不足");
-  setText("kpiHealthLevel", health.level || "資料覆蓋門檻 50%");
+  setText("kpiHealthLevel", health.level || "資料覆蓋門檻 70%");
   setText("kpiYield", percentPoint(dividend.yield));
   setText("kpiYieldBasis", dividend.last_completed_year ? `${dividend.last_completed_year} 完整年度` : "最近完整年度");
   setText("kpiRevenue", percentPoint(data.revenue?.latest_yoy));
@@ -99,6 +124,45 @@ function renderFinancials(data) {
     ["52 週高點", money(f.fiftyTwoWeekHigh)], ["52 週低點", money(f.fiftyTwoWeekLow)],
   ];
   replace("financialMetrics", definitions.map(([label, value]) => metric(label, value)));
+}
+
+function renderModels(data) {
+  const models = data.model_assessments || {};
+  const growth = models.growth || {};
+  const safety = models.safety || {};
+  const statusNames = {
+    validated: "已通過驗證",
+    experimental_not_deployable: "實驗估計／未通過驗證",
+    experimental_not_validated: "實驗性篩檢／尚未歷史驗證",
+    specialized_model_pending: "專用模型待建立",
+    specialized_product_model_pending: "特殊商品專用模型待建立",
+    insufficient_data: "資料不足",
+    official_history_unavailable: "官方歷史資料暫不可用",
+    not_applicable: "不適用",
+  };
+  setText("modelSeparationNote", models.separation_note || "成長性與財務安全不合併成單一分數。");
+  setText("growthModelStatus", statusNames[growth.status] || growth.status || "資料不足");
+  const interval = growth.prediction_interval_80 || {};
+  replace("growthModelDetails", [
+    metric("正式成長評級", growth.rating || "未通過驗證", growth.experimental_rating ? `實驗分級 ${growth.experimental_rating}` : "不強行產生分數"),
+    metric("12 個月營收估計", percentPoint(growth.prediction_pct), growth.target || "未來連續 12 個月"),
+    metric("80% 估計區間", present(interval.low_pct) && present(interval.high_pct) ? `${percentPoint(interval.low_pct)} ～ ${percentPoint(interval.high_pct)}` : "資料不足"),
+    metric("正成長可能性", percentDecimal(growth.positive_growth_probability), "不是保證或勝率"),
+    metric("資料觀測至", growth.observed_through || "資料不足", growth.input_source || "官方資料"),
+    metric("EPS 次要目標", "尚未驗證", growth.secondary_eps_target?.note || "不產生預測數字"),
+  ]);
+  setText("growthModelNote", growth.note || "模型估計具有不確定性，請搭配原始資料判讀。");
+
+  setText("safetyModelTitle", assetTypeNames[data.stock?.asset_type] || (data.is_etf ? "ETF 結構安全" : "公司財務安全"));
+  setText("safetyModelStatus", statusNames[safety.status] || safety.status || "資料不足");
+  replace("safetyModelDetails", [
+    metric("正式安全評級", safety.rating || "未通過驗證", safety.experimental_rating ? `實驗分級 ${safety.experimental_rating}；不是破產機率` : "不套用不適合的公式"),
+    metric("篩檢分數", present(safety.score) ? `${number(safety.score, 1)} / 100` : "資料不足"),
+    metric("資料覆蓋率", percentDecimal(safety.coverage, 0)),
+    metric("信心標示", safety.confidence || "none"),
+    metric("評估目標", safety.target || "資料不足"),
+  ]);
+  setText("safetyModelNote", safety.note || "安全評級不代表股價不會下跌。");
 }
 
 function renderRisks(data) {
@@ -153,8 +217,7 @@ function renderNews(data) {
   const providerText = Object.entries(providers).map(([name, status]) => `${name}: ${status.status === "ok" ? `${status.count || 0} 則` : "失敗"}`).join(" · ");
   setText("newsStatus", `${providerText || "來源狀態不足"}。分類為關鍵字規則，不是投資訊號。`);
   const items = data.news || [];
-  if (!items.length) return replace("newsList", node("li", {}, empty("未取得可驗證的近期公開新聞。")));
-  replace("newsList", items.map(item => {
+  const renderItems = (target, selected, emptyText) => replace(target, selected.length ? selected.map(item => {
     const url = safeUrl(item.url);
     const title = url ? node("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: item.title || "未命名新聞" }) : node("strong", { text: item.title || "未命名新聞" });
     return node("li", {}, [
@@ -162,7 +225,9 @@ function renderNews(data) {
       node("p", { text: item.summary || "無摘要" }),
       node("small", {}, [item.source || "來源未標示", item.date ? ` · ${item.date}` : "", node("span", { className: "sentiment", text: signalNames[item.sentiment] || "未分類" })]),
     ]);
-  }));
+  }) : node("li", {}, empty(emptyText)));
+  renderItems("companyNewsList", items.filter(item => !item.is_fallback), "未取得可驗證的公司相關新聞。");
+  renderItems("industryNewsList", items.filter(item => item.is_fallback), "未使用產業新聞備援。");
   byId("newsStatus").title = `正向 ${counts.positive || 0}／負向 ${counts.negative || 0}／中性 ${counts.neutral || 0}`;
 }
 
@@ -177,16 +242,39 @@ function renderCharts(data) {
 
 function renderSources(data) {
   const quality = data.data_quality || {};
+  const provenance = data.data_provenance || {};
+  const statusName = { official: "官方", stale: "官方舊資料", fallback: "備援", derived: "推算" };
+  const sourceDetail = (item) => {
+    if (!item) return node("span", { text: "未取得" });
+    const details = [
+      item.observed_at ? `資料期間：${item.observed_at}` : "資料期間：未提供",
+      item.unit ? `單位：${item.unit}` : "單位：未提供",
+      item.fetched_at ? `抓取時間：${item.fetched_at}` : "抓取時間：未提供",
+      item.note || "",
+    ].filter(Boolean).join("｜");
+    return node("details", { className: "source-detail" }, [
+      node("summary", { text: `${item.source || "來源未標示"} · ${statusName[item.status] || item.status || "狀態未標示"}` }),
+      node("small", { text: details }),
+    ]);
+  };
   const entries = [
-    ["股票清單", quality.stock_mapping_source || "unknown"],
+    ["股票清單", `${quality.stock_mapping_source || "unknown"} · ${quality.stock_mapping_status || "unknown"}`],
+    ["主檔更新", quality.stock_mapping_updated_at || "未提供"],
     ["健康度覆蓋", percentDecimal(quality.health_coverage, 0)],
     ["Piotroski 覆蓋", percentDecimal(quality.piotroski_coverage, 0)],
     ["新聞分類", data.sentiment_method || "未執行"],
-    ["季度 EPS", quality.eps_source || "未取得"],
-    ["月營收", quality.revenue_source || "未取得"],
-    ["價格日期", data.stock?.price_date || "未提供"],
+    ["參考價", sourceDetail(provenance.current_price)],
+    ["月營收", sourceDetail(provenance.latest_revenue)],
+    ["季度 EPS", sourceDetail(provenance.latest_eps)],
+    ["官方累計 EPS", sourceDetail(provenance.official_cumulative_eps)],
   ];
-  replace("dataSourceList", entries.flatMap(([label, value]) => [node("dt", { text: label }), node("dd", { text: value })]));
+  for (const [field, item] of Object.entries(provenance.financial_fields || {})) {
+    entries.push([`財務欄位：${field}`, sourceDetail(item)]);
+  }
+  replace("dataSourceList", entries.flatMap(([label, value]) => [
+    node("dt", { text: label }),
+    value instanceof Node ? node("dd", {}, value) : node("dd", { text: value }),
+  ]));
 }
 
 function renderCompany(data) {
@@ -204,7 +292,7 @@ function renderCompany(data) {
 }
 
 export function renderResult(data) {
-  renderHeader(data); renderQualityBanner(data); renderKpis(data); renderValuation(data); renderHealth(data);
+  renderHeader(data); renderFactsSummary(data); renderQualityBanner(data); renderModels(data); renderKpis(data); renderValuation(data); renderHealth(data);
   renderFinancials(data); renderRisks(data); renderQuality(data); renderIncome(data); renderPeers(data);
   renderNews(data); renderCharts(data); renderSources(data); renderCompany(data);
 }

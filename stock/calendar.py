@@ -2,9 +2,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
-
-from stock.data import _suffix
 from stock.yf_errors import YFINANCE_EXCEPTIONS
 from utils.logger import get_logger
 
@@ -14,7 +11,12 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 
 def _timestamp_to_taipei_date(value: Any) -> Optional[str]:
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).astimezone(TAIPEI).date().isoformat()
+        return (
+            datetime.fromtimestamp(float(value), tz=timezone.utc)
+            .astimezone(TAIPEI)
+            .date()
+            .isoformat()
+        )
     except (TypeError, ValueError, OverflowError, OSError):
         return None
 
@@ -24,14 +26,21 @@ def get_calendar_events(
     market: str = "",
     dividend_history: Optional[List[Dict[str, Any]]] = None,
     dividend_events: Optional[List[Dict[str, Any]]] = None,
+    snapshot: Optional[Any] = None,
 ) -> Dict[str, Any]:
     result = {"earnings": [], "ex_dividend": None, "dividend_months": []}
     try:
-        info = yf.Ticker(stock_id + _suffix(market)).info or {}
+        if snapshot is None:
+            from services.market_snapshot import MarketDataSnapshot
+
+            snapshot = MarketDataSnapshot(stock_id, market)
+        info = snapshot.info()
         result["ex_dividend"] = _timestamp_to_taipei_date(info.get("exDividendDate"))
         earnings_date = _timestamp_to_taipei_date(info.get("earningsTimestamp"))
         if earnings_date:
-            result["earnings"].append({"date": earnings_date, "label": "近期待公布財報"})
+            today = datetime.now(TAIPEI).date().isoformat()
+            label = "已公布財報" if earnings_date < today else "預計公布財報"
+            result["earnings"].append({"date": earnings_date, "label": label})
     except YFINANCE_EXCEPTIONS as exc:
         logger.debug("calendar fetch failed for %s: %s", stock_id, exc)
 

@@ -27,6 +27,11 @@ cache/
 output/
 tmp/
 *.log
+research/data/*.csv.gz
+research/data/raw/
+build/
+dist/
+release/
 
 # OS metadata
 .DS_Store

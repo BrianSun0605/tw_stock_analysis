@@ -17,6 +17,8 @@ def test_template_exposes_analysis_and_report_lifecycle():
         "retryAnalysis",
         "analyzeAnother",
         "resultStatus",
+        "generatePdf",
+        "cancelTask",
     ):
         assert f'id="{element_id}"' in template
     assert "PDF 報告" in template
@@ -32,6 +34,9 @@ def test_frontend_can_recover_task_and_preserve_preview():
     assert "recoverTask" in app
     assert "handlePreview" in app
     assert "handleReportProgress" in app
+    assert "requestReport" in api
+    assert "cancelTask" in api
+    assert "generatePdf" in app
     assert "分析結果已可查看" in app
     assert "PDF 報告已完成" in app
     assert 'for (const id of ["downloadPdf", "progressDownloadPdf"])' in app
@@ -40,6 +45,8 @@ def test_frontend_can_recover_task_and_preserve_preview():
 def test_service_worker_refreshes_changed_static_assets():
     worker = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
     app = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
-    assert 'CACHE_NAME = "tw-stock-v4"' in worker
+    assert 'CACHE_NAME = "tw-stock-v10"' in worker
     assert "networkFirst" in worker
+    assert 'url.pathname === "/"' in worker
+    assert '  "/",' not in worker
     assert 'updateViaCache: "none"' in app

@@ -1,2 +1,6 @@
 -r requirements.txt
-pytest>=8,<10
+pytest==9.0.3
+ruff==0.15.21
+playwright==1.59.0
+pyinstaller==6.20.0
+pip-audit==2.10.1

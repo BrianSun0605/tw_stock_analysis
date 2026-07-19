@@ -1,5 +1,4 @@
 import math
-from pathlib import Path
 from types import SimpleNamespace
 
 import webui
@@ -15,11 +14,12 @@ def test_sse_preview_replaces_non_finite_numbers_with_null(monkeypatch):
         },
     }
 
-    def fake_analyze(query, *, progress, preview_callback, report_progress):
-        preview_callback(preview)
+    def fake_analyze(query, **kwargs):
+        kwargs["preview_callback"](preview)
         return SimpleNamespace(
             preview=preview,
-            output_path=str(Path("output") / "0050_report_json_test.pdf"),
+            output_path=None,
+            report_context={"stock_info": preview["stock"]},
         )
 
     with webui.tasks_lock:
