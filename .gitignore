@@ -23,6 +23,7 @@ picture/side/
 picture/border/
 
 # Generated application data
+app.lock
 cache/
 output/
 tmp/
