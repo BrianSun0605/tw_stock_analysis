@@ -1,7 +1,7 @@
 services:
   - type: web
-    # Change this to an unused lowercase, hyphenated name before first deploy.
-    name: tw-stock-research-demo
+    # Public Render service and default onrender.com subdomain.
+    name: briansun0605-tw-stock-analysis
     runtime: python
     plan: free
     region: singapore
