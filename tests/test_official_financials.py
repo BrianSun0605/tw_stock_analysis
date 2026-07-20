@@ -13,14 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Response:
-    def __init__(self, payload):
+    def __init__(self, payload, *, content_type="application/json", content=b"[]"):
         self._payload = payload
+        self.headers = {"Content-Type": content_type}
+        self.content = content
 
     def raise_for_status(self):
         return None
 
     def json(self):
         return self._payload
+
+
+class _InvalidJsonResponse(_Response):
+    def json(self):
+        raise ValueError("invalid JSON")
 
 
 def _dataset(rows, url="https://official.example/data", status="official"):
@@ -249,3 +256,36 @@ def test_schema_change_without_last_good_is_explicit(monkeypatch):
     finally:
         if test_dir.is_dir():
             shutil.rmtree(test_dir)
+
+
+def test_non_json_official_response_is_recoverable_availability_failure(monkeypatch):
+    test_dir = ROOT / "output" / f".official-test-{uuid.uuid4().hex}"
+    response = _InvalidJsonResponse(
+        None,
+        content_type="text/html; charset=utf-8",
+        content=b"<!doctype html><title>Temporary gateway response</title>",
+    )
+    monkeypatch.setattr(official, "_SOURCE_DIR", str(test_dir))
+    monkeypatch.setattr(official.requests, "get", lambda *_args, **_kwargs: response)
+    try:
+        with pytest.raises(official.OfficialNetworkError, match="暫未回傳 JSON"):
+            official._load_dataset(
+                "https://official.example/non-json",
+                (("公司代號",),),
+            )
+        state = official._read_state("https://official.example/non-json")
+        assert state["error_type"] == "network"
+    finally:
+        if test_dir.is_dir():
+            shutil.rmtree(test_dir)
+
+
+def test_legacy_cached_non_json_error_uses_recoverable_classification():
+    error = official._stored_error(
+        {
+            "error_type": "schema",
+            "last_error": "官方來源不是有效 JSON：https://official.example/data（JSONDecodeError）",
+        },
+        "https://official.example/data",
+    )
+    assert isinstance(error, official.OfficialNetworkError)

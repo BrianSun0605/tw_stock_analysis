@@ -28,6 +28,10 @@ TPEX_BALANCE_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap07_O_{repor
 SOURCE_TTL = timedelta(hours=24)
 _SOURCE_DIR = os.path.join(CACHE_DIR, "official_sources")
 _LOCK = threading.RLock()
+# The official OpenAPI normally sends ``application/json``.  Explicitly
+# requesting it avoids content negotiation falling back to an HTML response
+# on some proxy/CDN paths used by public hosts.
+OFFICIAL_API_HEADERS = {**HEADERS, "Accept": "application/json, text/plain, */*"}
 
 
 class OfficialSourceError(RuntimeError):
@@ -112,9 +116,42 @@ def _write_state(url: str, state: Mapping[str, Any]) -> None:
 
 def _stored_error(state: Mapping[str, Any], url: str) -> OfficialSourceError:
     message = str(state.get("last_error") or f"official source unavailable: {url}")
+    # Versions before the public-web compatibility fix stored non-JSON
+    # responses as schema errors.  They were transport/availability errors,
+    # not proof that the official JSON contract had changed, so allow the
+    # caller to use its explicitly-labelled fallback instead of being blocked
+    # by that cached classification for a full day.
+    if "官方來源不是有效 JSON" in message:
+        return OfficialNetworkError(message)
     if state.get("error_type") == "schema":
         return OfficialSchemaError(message)
     return OfficialNetworkError(message)
+
+
+def _non_json_response_error(
+    response: Any, url: str, exc: Exception
+) -> OfficialSourceError:
+    """Classify HTML/empty proxy responses as availability failures.
+
+    A JSON decoding error alone does not establish that TWSE changed its
+    schema.  Public-cloud egress can instead receive a gateway, rate-limit,
+    or bot-protection document.  Those cases must remain recoverable so the
+    analysis pipeline can use the existing, labelled fallback sources.
+    """
+    headers = getattr(response, "headers", {}) or {}
+    content_type = str(headers.get("Content-Type") or "").lower()
+    content = getattr(response, "content", b"")
+    if isinstance(content, str):
+        raw = content.encode("utf-8", errors="replace")
+    else:
+        raw = bytes(content or b"")
+    trimmed = raw.lstrip()
+    if not trimmed or "json" not in content_type or trimmed.startswith((b"<", b"<!")):
+        detail = content_type or "missing Content-Type"
+        return OfficialNetworkError(
+            f"官方來源暫未回傳 JSON（{detail}）：{url}（{type(exc).__name__}）"
+        )
+    return OfficialSchemaError(f"官方來源不是有效 JSON：{url}（{type(exc).__name__}）")
 
 
 def _validate_rows(
@@ -160,7 +197,7 @@ def _load_dataset(
             raise _stored_error(state, url)
 
         try:
-            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            response = requests.get(url, headers=OFFICIAL_API_HEADERS, timeout=TIMEOUT)
             response.raise_for_status()
         except requests.RequestException as exc:
             error: OfficialSourceError = OfficialNetworkError(
@@ -170,9 +207,7 @@ def _load_dataset(
             try:
                 rows = _validate_rows(response.json(), url, required_groups)
             except (ValueError, json.JSONDecodeError) as exc:
-                error = OfficialSchemaError(
-                    f"官方來源不是有效 JSON：{url}（{type(exc).__name__}）"
-                )
+                error = _non_json_response_error(response, url, exc)
             except OfficialSchemaError as exc:
                 error = exc
             else:
