@@ -15,7 +15,7 @@ Current branch: `main`
 - The growth model uses `growth_revenue_v2`, with MAE 0.1703 on 1,696 issuers and 6,619 final holdout samples (about 4.8% better than the zero-growth baseline). Formal gates and the point-in-time limitation remain, so it shows only a research/education growth reference tier.
 - Ordinary-company financial safety uses `financial_structure_reference_v3`: the latest official quarterly same-period assets, liabilities, retained earnings, operating income, and revenue produce a Z-ref A/C/E financial-structure reference. The formal rating remains blank and must not be called a bankruptcy probability or Taiwan credit rating.
 - The English PDF now has detailed parity with the Chinese report and a detailed-report regression test requiring at least 15 pages. All system UI text and dynamic analysis narrative must follow the selected language.
-- A GitHub + Render public-demo path is now included. `render.yaml` defines a Python 3.12 Singapore Free Web Service with `/healthz` and deployment after CI succeeds. `TWSTOCK_APP_MODE=web` is only for the public host: it reads `PORT`, binds to `0.0.0.0`, opens no browser, and skips the desktop single-instance lock. See `docs/DEPLOYMENT_RENDER.en.md`; GitHub remote setup and Render-account authorization still require the repository owner.
+- A GitHub + Render public-demo path is now included. `render.yaml` defines a Python 3.12 Singapore Free Web Service with `/healthz` and deployment after CI succeeds. `TWSTOCK_APP_MODE=web` is only for the public host: it reads `PORT`, binds to `0.0.0.0`, opens no browser, and skips the desktop single-instance lock. The GitHub remote is configured and the initial commit is pushed. See `docs/DEPLOYMENT_RENDER.en.md`; Render-account authorization and the Blueprint still require the repository owner.
 
 ## 1. Understand This Project in 30 Seconds
 
@@ -40,13 +40,13 @@ Most important product rules:
 |---|---|
 | Branch | `main` |
 | Committed baseline | `4b1c8be` |
-| Remote repository | Not configured yet |
+| Remote repository | `https://github.com/BrianSun0605/tw_stock_analysis.git`; `main` tracks `origin/main` |
 | Git tag / GitHub Release | Not created yet |
 | Open-source license | MIT, Copyright (c) 2026 Fat Cat Game Studio |
 | Windows code signing | Not signed; public downloads may show a SmartScreen warning |
 | This handoff document | Will be an uncommitted change after creation; the successor must verify it and commit it separately |
 
-Artifacts such as `release/`, `dist/`, and `build/` are managed by `.gitignore`; do not commit large packaged artifacts directly to Git. A remote repository should be created in the future, followed by a formal Release containing the ZIP, Setup EXE, and SHA-256.
+Artifacts such as `release/`, `dist/`, and `build/` are managed by `.gitignore`; do not commit large packaged artifacts directly to Git. A future GitHub Release can contain the ZIP, Setup EXE, and SHA-256.
 
 ## 3. Completed Status with Evidence
 

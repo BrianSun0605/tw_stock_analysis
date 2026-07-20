@@ -88,4 +88,5 @@
 - [x] 新增獨立 `TWSTOCK_APP_MODE=web`：讀取平台 `PORT`、綁定 `0.0.0.0`、不開啟瀏覽器、不使用桌面單一執行個體鎖；桌面版仍只綁定 `127.0.0.1`。
 - [x] 公開模式移除 `/shutdown` 路由和關閉按鈕，使用暫存資料根目錄與較小的容量／保留上限，並對每個來源預設限制每小時 6 次分析、每分鐘 60 次搜尋；全服務仍只執行一個重工作。
 - [x] 新增公開模式、健康檢查、關機面與頻率限制回歸測試；實際以 `TWSTOCK_APP_MODE=web` 本機 smoke test 驗證 `/healthz` 200、首頁無關機 token／按鈕、`POST /shutdown` 404。最終 `ruff check .`、`ruff format --check .`、127 項 pytest 與 10 個 JavaScript `node --check` 全數通過。
-- [ ] GitHub remote、第一次 push 與實際 Render Blueprint 尚需 repository 擁有者登入 GitHub／Render 授權後完成；步驟見 `docs/DEPLOYMENT_RENDER.md`。
+- [x] Git for Windows 已由官方簽章安裝，GitHub remote `https://github.com/BrianSun0605/tw_stock_analysis.git` 已建立，首次提交 `2a3da08` 已推送至 `main`；快取、輸出、虛擬環境與打包產物均由 `.gitignore` 排除。
+- [ ] 實際 Render Blueprint 仍需 repository 擁有者登入 Render 並授權 GitHub repository 後完成；步驟見 `docs/DEPLOYMENT_RENDER.md`。

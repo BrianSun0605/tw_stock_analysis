@@ -15,7 +15,7 @@
 - 成長模型採用 `growth_revenue_v2`，在 1,696 家、6,619 筆最終保留樣本測得 MAE 0.1703（相對零成長基準約改善 4.8%）。正式門檻與 point-in-time 限制不變，因此僅顯示研究／教育用「成長參考分級」。
 - 一般公司財務安全採用 `financial_structure_reference_v3`：以最新官方季度同期間資產、負債、保留盈餘、營業利益與營收建立 Z-ref A／C／E 財務結構參考。正式評級仍為空白，不能稱為破產機率或台灣信用評等。
 - 英文 PDF 已補齊與中文相當的明細章節，並有至少 15 頁的詳細報告回歸測試；所有系統介面文字與動態分析敘述都必須依語言模式輸出。
-- 已加入 GitHub + Render 公開展示路徑：`render.yaml` 使用 Python 3.12、Singapore 免費 Web Service、`/healthz`、CI 成功後自動部署。`TWSTOCK_APP_MODE=web` 只在公開主機使用，讀取 `PORT`、綁定 `0.0.0.0`、不開瀏覽器與不使用桌面單一執行個體鎖。完整步驟見 `docs/DEPLOYMENT_RENDER.md`；GitHub remote／Render 帳號授權仍待 repository 擁有者完成。
+- 已加入 GitHub + Render 公開展示路徑：`render.yaml` 使用 Python 3.12、Singapore 免費 Web Service、`/healthz`、CI 成功後自動部署。`TWSTOCK_APP_MODE=web` 只在公開主機使用，讀取 `PORT`、綁定 `0.0.0.0`、不開瀏覽器與不使用桌面單一執行個體鎖。GitHub remote 已建立並推送首次提交；完整步驟見 `docs/DEPLOYMENT_RENDER.md`，實際 Render 帳號授權與 Blueprint 仍待 repository 擁有者完成。
 
 ## 1. 先用 30 秒理解這個專案
 
@@ -40,13 +40,13 @@
 |---|---|
 | 分支 | `main` |
 | 已提交基準 | `4b1c8be` |
-| 遠端 repository | 尚未設定 |
+| 遠端 repository | `https://github.com/BrianSun0605/tw_stock_analysis.git`，`main` 已追蹤 `origin/main` |
 | Git tag / GitHub Release | 尚未建立 |
 | 開源授權 | MIT，Copyright (c) 2026 胖貓貓工作室 |
 | Windows 數位簽章 | 尚未簽署，公開下載可能出現 SmartScreen 警告 |
 | 交接文件本身 | 建立後會是未提交變更，需由接手者確認後另行 commit |
 
-`release/`、`dist/`、`build/` 等產物受 `.gitignore` 管理，不應把大型打包產物直接提交到 Git。未來應建立遠端 repository，再用正式 Release 附件發佈 ZIP、Setup EXE 與 SHA-256。
+`release/`、`dist/`、`build/` 等產物受 `.gitignore` 管理，不應把大型打包產物直接提交到 Git。未來可用 GitHub Release 附件發佈 ZIP、Setup EXE 與 SHA-256。
 
 ## 3. 已完成並有證據的狀態
 
