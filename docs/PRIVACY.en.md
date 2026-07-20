@@ -6,7 +6,7 @@ This project has two explicitly different runtime modes, with different data pat
 
 - The App provides its interface only on local `127.0.0.1`; it does not accept connections from a LAN or the Internet.
 - The App does not require an account and does not collect names, email addresses, trading records, or portfolios.
-- Queried stock codes are sent from the user's computer to data sources such as TWSE, TPEx, the Market Observation Post System, Yahoo Finance, and news RSS. Those sources may record IP addresses, User-Agent values, and requests under their own policies.
+- Queried stock codes are sent from the user's computer to data sources such as TWSE, TPEx, the Market Observation Post System, FinMind, Yahoo Finance, and news RSS. Those sources may record IP addresses, User-Agent values, and requests under their own policies.
 - Analysis cache, SQLite, logs, and PDFs remain on the local computer. The release build uses each Windows user's LocalAppData; development mode uses the project directory.
 - Each PDF is retained for three days by default, and the oldest files are removed first when output exceeds 250 MiB. Cache is reduced to 160 MiB when it exceeds 200 MiB.
 - Local mode does not upload analysis results to a server operated by this project.

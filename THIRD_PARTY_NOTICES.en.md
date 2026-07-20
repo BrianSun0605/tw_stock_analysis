@@ -38,6 +38,7 @@ The release installer should retain package licenses/metadata collected by PyIns
 ## Data Sources
 
 - TWSE OpenAPI, TPEx OpenAPI, and the Market Observation Post System: official public-data sources. The App stores the required snapshots and cache and labels source and date for each field.
+- FinMind API: structured fallback data only when a public-cloud host cannot temporarily obtain complete monthly revenue or quarterly EPS from TWSE/TPEx/MOPS. Returned values are always marked `fallback` and remind users to check official disclosures; the project never presents them as direct official responses.
 - Yahoo Finance / yfinance: fallback only for market data, some financial data, and ETF information. Upstream describes Yahoo data as oriented toward personal research. This project does not redistribute a complete Yahoo dataset; terms must be reconfirmed before commercialization.
 - Google News / Bing RSS: only titles, summaries, sources, and links from public indexes are organized; full text is neither stored nor republished.
 

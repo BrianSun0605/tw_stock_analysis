@@ -28,6 +28,11 @@ from stock.official_financials import (
     OfficialNetworkError,
     get_official_revenue,
 )
+from stock.finmind import (
+    FinMindSourceError,
+    get_monthly_revenue_history as get_finmind_monthly_revenue_history,
+    get_quarterly_eps as get_finmind_quarterly_eps,
+)
 from stock.mops_history import get_monthly_revenue_history
 from utils.logger import get_logger
 
@@ -342,6 +347,33 @@ def get_revenue_data(
             logger.warning(
                 "opt-in HiStock revenue fetch failed for %s: %s", stock_id, e
             )
+    # A public-cloud address can be blocked by TWSE/MOPS even though the same
+    # official endpoint works for a desktop user.  Use the structured fallback
+    # only when the official chain failed to supply the 24-month series needed
+    # by charts and the growth model.  Every fallback row carries provenance
+    # and a non-official status.
+    if len(records) < 24:
+        try:
+            fallback_records = get_finmind_monthly_revenue_history(stock_id)
+        except FinMindSourceError as exc:
+            logger.warning(
+                "FinMind revenue fallback unavailable for %s: %s", stock_id, exc
+            )
+        else:
+            merged = {
+                (int(item["year"]), int(item["month"])): item
+                for item in fallback_records
+                if item.get("year") and item.get("month")
+            }
+            # Prefer any direct official/MOPS observation for the same month.
+            merged.update(
+                {
+                    (int(item["year"]), int(item["month"])): item
+                    for item in records
+                    if item.get("year") and item.get("month")
+                }
+            )
+            records = list(merged.values())
     if not records:
         records = _fetch_revenue_yfinance(stock_id, market)
     records.sort(key=lambda x: (x.get("year", 0), x.get("month", 0)))
@@ -492,7 +524,7 @@ def get_eps_data(
     official_financials: Optional[Dict[str, Any]] = None,
     language: str = "zh-TW",
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    cached = cache_get(stock_id, "eps_yahoo_v4", max_age_sec=86400)
+    cached = cache_get(stock_id, "eps_sources_v5", max_age_sec=86400)
     if cached is not None:
         records = cached
     else:
@@ -511,8 +543,32 @@ def get_eps_data(
                 logger.warning(
                     "yfinance quarterly EPS fetch failed for %s: %s", stock_id, e
                 )
+        # Yahoo's high-level statement object can be empty or incomplete in
+        # a hosted environment.  Fill only missing quarters from the
+        # explicitly-labelled fallback, retaining Yahoo values where present.
+        if len(records) < 8:
+            try:
+                fallback_records = get_finmind_quarterly_eps(stock_id)
+            except FinMindSourceError as exc:
+                logger.warning(
+                    "FinMind EPS fallback unavailable for %s: %s", stock_id, exc
+                )
+            else:
+                merged = {
+                    (int(item["year"]), int(item["quarter"])): item
+                    for item in fallback_records
+                    if item.get("year") and item.get("quarter")
+                }
+                merged.update(
+                    {
+                        (int(item["year"]), int(item["quarter"])): item
+                        for item in records
+                        if item.get("year") and item.get("quarter")
+                    }
+                )
+                records = list(merged.values())
         if records:
-            cache_set(stock_id, "eps_yahoo_v4", records)
+            cache_set(stock_id, "eps_sources_v5", records)
     official_eps = (official_financials or {}).get("official_cumulative_eps")
     if official_eps and official_financials.get("quarter") == 1:
         year = int(official_financials["year"])

@@ -481,31 +481,45 @@ def analyze(
         safety_assessment = assess_etf_structure(etf_inputs)
     else:
         growth_assessment = growth_unavailable(
-            "insufficient_data", "沒有可供成長模型使用的官方月營收。"
+            "insufficient_data", "沒有可供成長模型使用的連續月營收。"
         )
         if revenue_data:
             latest_revenue = revenue_data[-1]
-            try:
-                revenue_history = get_monthly_revenue_history(
-                    stock_id,
-                    end_year=int(latest_revenue["year"]),
-                    end_month=int(latest_revenue["month"]),
-                    market=market,
-                    months=24,
-                    latest_record=latest_revenue,
-                )
+            periods = sorted(
+                int(item["year"]) * 12 + int(item["month"]) - 1
+                for item in revenue_data
+                if item.get("year") and item.get("month")
+            )
+            has_continuous_history = len(periods) >= 24 and all(
+                current - previous == 1
+                for previous, current in zip(periods[-24:], periods[-23:])
+            )
+            if has_continuous_history:
                 growth_assessment = assess_revenue_growth(
-                    revenue_history, model_stock_info
+                    revenue_data, model_stock_info
                 )
-            except (OfficialNetworkError, OfficialDataMissing) as exc:
-                growth_assessment = growth_unavailable(
-                    "official_history_unavailable",
-                    f"官方歷史月營收暫時無法完整取得：{exc}",
-                )
-            except OfficialSchemaError as exc:
-                raise AnalysisError(
-                    f"官方歷史月營收格式已改變，已停止成長估計：{exc}"
-                ) from exc
+            else:
+                try:
+                    revenue_history = get_monthly_revenue_history(
+                        stock_id,
+                        end_year=int(latest_revenue["year"]),
+                        end_month=int(latest_revenue["month"]),
+                        market=market,
+                        months=24,
+                        latest_record=latest_revenue,
+                    )
+                    growth_assessment = assess_revenue_growth(
+                        revenue_history, model_stock_info
+                    )
+                except (OfficialNetworkError, OfficialDataMissing) as exc:
+                    growth_assessment = growth_unavailable(
+                        "official_history_unavailable",
+                        f"官方歷史月營收暫時無法完整取得：{exc}",
+                    )
+                except OfficialSchemaError as exc:
+                    raise AnalysisError(
+                        f"官方歷史月營收格式已改變，已停止成長估計：{exc}"
+                    ) from exc
         safety_assessment = assess_company_safety(
             model_stock_info,
             price_info,

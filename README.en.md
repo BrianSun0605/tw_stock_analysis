@@ -1,13 +1,13 @@
 # Taiwan Stock Research
 
-This is a Taiwan-stock research tool that can run on your own computer or be deployed as a public demo website. It organizes official public data, Yahoo fallback data, valuation scenarios, financial-risk signals, and news indexes, and lets users download PDFs themselves.
+This is a Taiwan-stock research tool that can run on your own computer or be deployed as a public demo website. It organizes official public data, clearly labelled Yahoo/FinMind fallback data, valuation scenarios, financial-risk signals, and news indexes, and lets users download PDFs themselves.
 
 It is not a trading system and does not guarantee that a stock will rise. Growth, financial safety, and whether a share price is cheap are three different things; the interface does not average them into a deceptively precise single score.
 
 ## What It Can Do Now
 
 - Search the project-bundled snapshot of 2,773 official securities, covering listed, OTC, and Emerging Stock Market securities, including stocks, TDRs, ETFs, ETNs, preferred shares, and REITs; warrants and bonds are excluded.
-- Read TWSE, TPEx, and Market Observation Post System data first. Monthly revenue uses the latest OpenAPI period together with the official MOPS historical archive to complete trends. Yahoo is used only when data is missing, and the interface marks source, date, fallback, and stale status.
+- Read TWSE, TPEx, and Market Observation Post System data first. Monthly revenue uses the latest OpenAPI period together with the official MOPS historical archive to complete trends. If a cloud host is temporarily rejected by an official endpoint, structured FinMind monthly-revenue/quarterly-EPS data is used only as a labelled fallback; the interface marks source, date, `fallback`, and stale status.
 - Show confirmed data separately from model estimates.
 - Display valuation ranges, financial health, Piotroski/Altman applicability, dividends, peers, calendars, and news indexes.
 - Provide an offline, bilingual Investment Learning Lab: seven learning tracks, 44 concepts, and 220 local questions covering foundations; candlesticks and price charts; financials and valuation; ETFs; industry research; news literacy; and strategy/risk. Learners can use track, level, missed-question, and starred-key-question views.
@@ -82,7 +82,7 @@ For the first GitHub upload, creating the free Render Blueprint, naming, testing
 | Data | Preferred source | Fallback or limitation |
 |---|---|---|
 | Security list | TWSE OpenAPI, TPEx OpenAPI, and the official TWSE ETN product list | A versioned official snapshot is used; a failed update does not overwrite the last valid version |
-| Monthly revenue and financial statements | Market Observation Post System | An available fallback is used only when official data is missing, and every field is labeled |
+| Monthly revenue and financial statements | TWSE/TPEx OpenAPI and Market Observation Post System | If official endpoints are temporarily unavailable, FinMind structured monthly revenue and quarterly EPS can be used as a fallback. Each value retains its `fallback` status, source, and reminder to check official disclosures. |
 | Market prices, some financial data, and ETF data | Yahoo Finance / yfinance | Yahoo is a fallback; its upstream data is oriented toward personal research, so terms must be reconfirmed before commercialization |
 | News | Google/Bing RSS indexes | Only titles, summaries, sources, and links are organized; full text is not stored |
 

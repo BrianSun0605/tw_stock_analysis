@@ -90,3 +90,10 @@ Updated: 2026-07-20
 - [x] Added regression tests for public mode, health, shutdown surface, and rate limiting. A real local `TWSTOCK_APP_MODE=web` smoke test verified `/healthz` 200, no shutdown token/control in the homepage, and `POST /shutdown` 404. Final `ruff check .`, `ruff format --check .`, 127 pytest tests, and 10 JavaScript `node --check` commands all passed.
 - [x] Git for Windows was installed from an officially signed installer. The GitHub remote `https://github.com/BrianSun0605/tw_stock_analysis.git` was created, and initial commit `2a3da08` was pushed to `main`; cache, output, virtual environments, and packaging artifacts remain excluded by `.gitignore`.
 - [ ] The actual Render Blueprint still requires the repository owner to sign in to Render and authorize the GitHub repository. See `docs/DEPLOYMENT_RENDER.en.md`.
+
+## 2026-07-21: Render data-source fallback completeness
+
+- [x] A real Render request showed that TWSE `t187ap06_L_ci` can return HTML rather than JSON. The earlier fix now treats this as temporary source unavailability instead of falsely claiming an official schema change and aborting the whole analysis.
+- [x] Added structured FinMind monthly-revenue and quarterly-EPS fallback only when the official/MOPS chain is insufficient. Values normalize into the existing TWD-thousand and TWD-per-share contracts and retain source, date, `fallback` status, and an official-verification reminder.
+- [x] With a simulated Render official-source HTML response and real 2330 data, the app obtained 36 revenue months, 17 quarterly EPS observations, growth reference tier D, a fair-price range, and PEG without presenting fallback values as direct official responses.
+- [x] Added four source/unit/merge regression tests; 25 related tests and Ruff pass. A complete public-URL analysis and PDF acceptance check remains required after the push.

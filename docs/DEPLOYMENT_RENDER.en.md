@@ -62,7 +62,7 @@ The first `git push` asks you to sign in through a browser or configure a Person
 - A Render Free Web Service is for demonstration. It can sleep when idle, and its filesystem is temporary. Old tasks, caches, and PDFs can disappear after a restart, redeploy, or storage cleanup.
 - Learning Lab answers and starred questions stay in each user's browser `localStorage`, not in a server database. Clearing browser site data also clears them.
 - This public site has no account system. Task IDs are high-entropy random values, one heavy job runs at a time, and source-based limits are enabled; this is not enterprise-grade multi-user isolation. A long-term public service should add authentication, shared rate limiting/WAF, monitoring, and persistent object storage.
-- Data still depends on TWSE, TPEx, MOPS, Yahoo fallback, and RSS availability and terms. Keep the research/education and investment-disclaimer language in the public demo.
+- Data still depends on TWSE, TPEx, MOPS, FinMind/Yahoo fallback, and RSS availability and terms. FinMind activates only when the official monthly-revenue/quarterly-EPS path is temporarily unavailable and retains a `fallback` label plus an official-verification reminder. Keep the research/education and investment-disclaimer language in the public demo.
 - Render deployment needs no AI API key. Analysis, question-bank content, and reports continue to run independently on the server.
 
 ## Adjust Public Demo Quotas

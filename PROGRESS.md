@@ -90,3 +90,10 @@
 - [x] 新增公開模式、健康檢查、關機面與頻率限制回歸測試；實際以 `TWSTOCK_APP_MODE=web` 本機 smoke test 驗證 `/healthz` 200、首頁無關機 token／按鈕、`POST /shutdown` 404。最終 `ruff check .`、`ruff format --check .`、127 項 pytest 與 10 個 JavaScript `node --check` 全數通過。
 - [x] Git for Windows 已由官方簽章安裝，GitHub remote `https://github.com/BrianSun0605/tw_stock_analysis.git` 已建立，首次提交 `2a3da08` 已推送至 `main`；快取、輸出、虛擬環境與打包產物均由 `.gitignore` 排除。
 - [ ] 實際 Render Blueprint 仍需 repository 擁有者登入 Render 並授權 GitHub repository 後完成；步驟見 `docs/DEPLOYMENT_RENDER.md`。
+
+## 2026-07-21：Render 資料來源備援完整性
+
+- [x] 實測 Render 的 TWSE `t187ap06_L_ci` 端點會回傳 HTML，而非 JSON；舊程式已先修正為來源暫不可用，不再誤判為官方格式改版並中止整個分析。
+- [x] 新增 FinMind 結構化月營收與季度 EPS 備援：只在官方／MOPS 鏈路不足時補齊，統一換算至既有 TWD 千元與每股 TWD 契約，保留來源、日期、`fallback` 狀態與官方核對提示。
+- [x] 以真實 2330 資料模擬 Render 官方來源 HTML 回應：取得 36 個月營收、17 筆季度 EPS、成長參考分級 D、合理價與 PEG；不會把備援資料偽裝成官方直接回應。
+- [x] 新增 4 項來源／單位／合併回歸測試；相關測試 25 項與 Ruff 通過。待推送後仍需在公開網址重跑完整分析與 PDF 驗收。

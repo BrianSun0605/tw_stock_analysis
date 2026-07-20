@@ -149,6 +149,11 @@ def assess_revenue_growth(
         if not check.get("passed")
     ]
     reference_rating = _reference_grade(prediction, probability)
+    source_names = sorted(
+        {str(item.get("source") or "") for item in window if item.get("source")}
+    )
+    input_source = ", ".join(source_names) if source_names else "Revenue data"
+    uses_fallback = any(str(item.get("status") or "") == "fallback" for item in window)
     return {
         # ``rating`` deliberately remains reserved for a future formal grade.
         # The product now shows this usable tier under its honest label rather
@@ -175,7 +180,8 @@ def assess_revenue_growth(
         "deployment_gate": artifact["deployment_gate"],
         "feature_values": features,
         "formula": formula,
-        "input_source": "MOPS official monthly archives",
+        "input_source": input_source,
+        "input_uses_fallback": uses_fallback,
         "secondary_eps_target": {
             "status": "not_validated",
             "target": "未來 EPS 成長",

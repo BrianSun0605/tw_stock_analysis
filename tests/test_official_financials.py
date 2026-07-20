@@ -86,6 +86,9 @@ def test_revenue_data_expands_latest_official_month_with_mops_history(monkeypatc
         lambda stock_id, **kwargs: history,
     )
     monkeypatch.setattr(
+        stock_data, "get_finmind_monthly_revenue_history", lambda *_args: []
+    )
+    monkeypatch.setattr(
         stock_data, "_plot_revenue_chart", lambda *_args, **_kwargs: None
     )
 
@@ -182,6 +185,7 @@ def test_official_q2_cumulative_eps_does_not_replace_single_quarter_yahoo(monkey
     monkeypatch.setattr(
         stock_data, "_fetch_eps_yfinance", lambda *_args, **_kwargs: list(yahoo)
     )
+    monkeypatch.setattr(stock_data, "get_finmind_quarterly_eps", lambda *_args: [])
     monkeypatch.setattr(stock_data, "_plot_eps_chart", lambda *_args, **_kwargs: None)
     cumulative = {
         "value": 5.5,

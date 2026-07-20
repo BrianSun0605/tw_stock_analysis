@@ -38,6 +38,7 @@
 ## 資料來源
 
 - TWSE OpenAPI、TPEx OpenAPI、公開資訊觀測站：官方公開資料來源；App 儲存必要快照與 cache，畫面逐欄標示來源與日期。
+- FinMind API：只在 TWSE／TPEx／MOPS 從公開雲端主機暫時無法取得完整月營收或季度 EPS 時，提供結構化備援資料。回傳值固定標示為 `fallback`，並提示使用者以官方揭露核對；本專案不將其表示為官方直接回應。
 - Yahoo Finance／yfinance：只作行情、部分財務與 ETF 資訊備援。上游說明 Yahoo 資料偏向個人研究使用；本專案不重新散布完整 Yahoo 資料集，商業化前必須重新確認條款。
 - Google News／Bing RSS：只整理公開索引的標題、摘要、來源與連結，不保存或重新發布全文。
 
