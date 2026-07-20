@@ -41,9 +41,11 @@ def test_release_analysis_finishes_without_automatic_pdf(monkeypatch):
         report_progress,
         cancel_event,
         deadline,
+        language,
     ):
         assert generate_report is False
         assert len(artifact_id) == 32
+        assert language == "zh-TW"
         progress("[5/5] 組裝分析結果")
         preview_callback(preview)
         return _result(preview)
@@ -69,8 +71,9 @@ def test_pdf_is_generated_only_after_explicit_request(monkeypatch):
         kwargs["preview_callback"](preview)
         return _result(preview)
 
-    def fake_generate(result, *, progress_callback, cancel_event, deadline):
+    def fake_generate(result, *, language, progress_callback, cancel_event, deadline):
         assert result.report_context["stock_info"]["stock_id"] == "2330"
+        assert language == "zh-TW"
         progress_callback(1, 1, "寫入 PDF 檔案")
         return str(Path("output") / "2330_report_unique.pdf")
 

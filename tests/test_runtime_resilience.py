@@ -14,6 +14,7 @@ from waitress import create_server
 
 import config
 import main
+import webui
 from stock.yf_errors import YFINANCE_EXCEPTIONS
 from webui import _close_waitress_server
 
@@ -63,6 +64,51 @@ def test_release_mode_uses_local_app_data_not_bundle():
     finally:
         if data_root.is_dir() and data_root.parent == root / "output":
             shutil.rmtree(data_root)
+
+
+def test_web_mode_uses_supplied_temporary_data_root():
+    root = Path(__file__).resolve().parents[1]
+    data_root = root / "output" / f".web-data-test-{uuid.uuid4().hex}"
+    env = {
+        **os.environ,
+        "TWSTOCK_APP_MODE": "web",
+        "TWSTOCK_DATA_ROOT": str(data_root),
+    }
+    code = (
+        "import json,config;"
+        "print(json.dumps({'mode':config.APP_MODE,'web':config.IS_WEB_MODE,"
+        "'data':config.DATA_ROOT,'output_max':config.OUTPUT_MAX_BYTES}))"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=root,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout.strip())
+        assert payload["mode"] == "web"
+        assert payload["web"] is True
+        assert Path(payload["data"]) == data_root
+        assert payload["output_max"] == 48 * 1024 * 1024
+    finally:
+        if data_root.is_dir() and data_root.parent == root / "output":
+            shutil.rmtree(data_root)
+
+
+def test_web_main_uses_platform_port_and_public_binding(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("PORT", "5188")
+    monkeypatch.setattr(
+        webui,
+        "run_server",
+        lambda port, host: captured.update({"port": port, "host": host}),
+    )
+
+    assert webui.web_main() == 0
+    assert captured == {"port": 5188, "host": "0.0.0.0"}
 
 
 def test_yfinance_cache_database_errors_are_recoverable():

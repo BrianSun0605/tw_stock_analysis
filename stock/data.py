@@ -28,6 +28,7 @@ from stock.official_financials import (
     OfficialNetworkError,
     get_official_revenue,
 )
+from stock.mops_history import get_monthly_revenue_history
 from utils.logger import get_logger
 
 plt.rcParams["axes.unicode_minus"] = False
@@ -112,6 +113,7 @@ def get_price_data(
     market: Optional[str] = None,
     artifact_dir: Optional[str] = None,
     snapshot: Optional[Any] = None,
+    language: str = "zh-TW",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if periods is None:
         periods = {"3m": 90, "6m": 180, "1y": 365}
@@ -165,13 +167,18 @@ def get_price_data(
                 }
                 continue
             chart_path = _plot_price_chart(
-                df, stock_id, label, artifact_dir=artifact_dir
+                df, stock_id, label, artifact_dir=artifact_dir, language=language
             )
             chart_variants = {}
             if label == "1y":
                 for m in ("price", "ma", "full"):
                     chart_variants[m] = _plot_price_chart(
-                        df, stock_id, label, mode=m, artifact_dir=artifact_dir
+                        df,
+                        stock_id,
+                        label,
+                        mode=m,
+                        artifact_dir=artifact_dir,
+                        language=language,
                     )
             high_idx = df["high"].idxmax()
             low_idx = df["low"].idxmin()
@@ -225,23 +232,31 @@ def _plot_price_chart(
     label: str,
     mode: str = "full",
     artifact_dir: Optional[str] = None,
+    language: str = "zh-TW",
 ) -> str:
     path = _chart_path(stock_id, f"price_{label}_{mode}", artifact_dir)
     fig, ax1 = plt.subplots(figsize=(10, 4))
-    ax1.plot(df.index, df["close"], "b-", linewidth=1.5, label="收盤價")
+    english = language == "en"
+    ax1.plot(
+        df.index,
+        df["close"],
+        "b-",
+        linewidth=1.5,
+        label="Close" if english else "收盤價",
+    )
     ax1.fill_between(df.index, df["close"], alpha=0.1, color="blue")
     if mode in ("ma", "full"):
         for period, color, lw, name in [
-            (20, "#FF9800", 1, "月線(20)"),
-            (60, "#9C27B0", 1, "季線(60)"),
-            (200, "#F44336", 1, "年線(200)"),
+            (20, "#FF9800", 1, "20-day MA" if english else "月線(20)"),
+            (60, "#9C27B0", 1, "60-day MA" if english else "季線(60)"),
+            (200, "#F44336", 1, "200-day MA" if english else "年線(200)"),
         ]:
             if len(df) >= period:
                 sma = df["close"].rolling(window=period).mean()
                 ax1.plot(
                     df.index, sma, color=color, linewidth=lw, alpha=0.7, label=name
                 )
-    ax1.set_ylabel("價格 (元)", fontsize=11)
+    ax1.set_ylabel("Price (TWD)" if english else "價格 (元)", fontsize=11)
     ax1.legend(loc="upper left")
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
@@ -270,9 +285,18 @@ def _plot_price_chart(
     if mode == "full" and "volume" in df.columns and df["volume"].sum() > 0:
         ax2 = ax1.twinx()
         ax2.bar(df.index, df["volume"] / 1e6, alpha=0.2, color="gray", width=0.8)
-        ax2.set_ylabel("成交量 (百萬)", fontsize=10)
-    labels_map = {"3m": "近3個月", "6m": "近6個月", "1y": "近1年"}
-    plt.title(f"{stock_id} 股價走勢 ({labels_map.get(label, label)})", fontsize=13)
+        ax2.set_ylabel("Volume (millions)" if english else "成交量 (百萬)", fontsize=10)
+    labels_map = (
+        {"3m": "3 months", "6m": "6 months", "1y": "1 year"}
+        if english
+        else {"3m": "近3個月", "6m": "近6個月", "1y": "近1年"}
+    )
+    plt.title(
+        f"{stock_id} Price Trend ({labels_map.get(label, label)})"
+        if english
+        else f"{stock_id} 股價走勢 ({labels_map.get(label, label)})",
+        fontsize=13,
+    )
     plt.tight_layout()
     _save_chart_atomic(path)
     plt.close()
@@ -280,13 +304,37 @@ def _plot_price_chart(
 
 
 def get_revenue_data(
-    stock_id: str, market: Optional[str] = None, artifact_dir: Optional[str] = None
+    stock_id: str,
+    market: Optional[str] = None,
+    artifact_dir: Optional[str] = None,
+    language: str = "zh-TW",
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     records = []
     try:
         records = get_official_revenue(stock_id, market or "")
     except (OfficialNetworkError, OfficialDataMissing) as exc:
         logger.warning("official revenue unavailable for %s: %s", stock_id, exc)
+    # TWSE/TPEx OpenAPI publishes the latest month only.  Use the official MOPS
+    # archive to supply the preceding months so charts and revenue comparisons
+    # do not misleadingly look like missing data just because the current API
+    # is a single-period dataset.
+    if records:
+        latest_record = records[-1]
+        try:
+            records = get_monthly_revenue_history(
+                stock_id,
+                end_year=int(latest_record["year"]),
+                end_month=int(latest_record["month"]),
+                market=market or "",
+                months=24,
+                latest_record=latest_record,
+            )
+        except (OfficialNetworkError, OfficialDataMissing) as exc:
+            logger.warning(
+                "official revenue history unavailable for %s; keeping latest month: %s",
+                stock_id,
+                exc,
+            )
     if not records and ALLOW_HISTOCK_SCRAPING:
         try:
             records = _fetch_revenue_histock(stock_id)
@@ -297,7 +345,9 @@ def get_revenue_data(
     if not records:
         records = _fetch_revenue_yfinance(stock_id, market)
     records.sort(key=lambda x: (x.get("year", 0), x.get("month", 0)))
-    chart_path = _plot_revenue_chart(records, stock_id, artifact_dir=artifact_dir)
+    chart_path = _plot_revenue_chart(
+        records, stock_id, artifact_dir=artifact_dir, language=language
+    )
     return records, chart_path
 
 
@@ -374,7 +424,10 @@ def _fetch_revenue_yfinance(
 
 @_plot_locked
 def _plot_revenue_chart(
-    records: List[Dict[str, Any]], stock_id: str, artifact_dir: Optional[str] = None
+    records: List[Dict[str, Any]],
+    stock_id: str,
+    artifact_dir: Optional[str] = None,
+    language: str = "zh-TW",
 ) -> Optional[str]:
     if not records:
         return None
@@ -388,7 +441,8 @@ def _plot_revenue_chart(
     )
     colors = ["#2196F3" if i % 2 == 0 else "#1976D2" for i in range(len(revenues))]
     ax1.bar(range(len(revenues)), revenues, color=colors, alpha=0.8, width=0.6)
-    ax1.set_ylabel("營收 (億元)", fontsize=11)
+    english = language == "en"
+    ax1.set_ylabel("Revenue (TWD 100m)" if english else "營收 (億元)", fontsize=11)
     ax1.set_xticks(range(len(labels)))
     ax1.set_xticklabels(labels, rotation=45, fontsize=8)
     for i, v in enumerate(revenues):
@@ -400,7 +454,7 @@ def _plot_revenue_chart(
         "g-o",
         linewidth=1.5,
         markersize=4,
-        label="月增率 (MoM %)",
+        label="MoM (%)" if english else "月增率 (MoM %)",
     )
     ax2.plot(
         range(len(yoys)),
@@ -408,16 +462,22 @@ def _plot_revenue_chart(
         "r-s",
         linewidth=1.5,
         markersize=4,
-        label="年增率 (YoY %)",
+        label="YoY (%)" if english else "年增率 (YoY %)",
     )
     ax2.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
-    ax2.set_ylabel("增減率 (%)", fontsize=11)
-    ax2.set_xlabel("年月", fontsize=11)
+    ax2.set_ylabel("Change (%)" if english else "增減率 (%)", fontsize=11)
+    ax2.set_xlabel("Period" if english else "年月", fontsize=11)
     ax2.set_xticks(range(len(labels)))
     ax2.set_xticklabels(labels, rotation=45, fontsize=8)
     ax2.legend(fontsize=10)
     ax2.grid(True, alpha=0.3)
-    plt.suptitle(f"{stock_id} 每月營收分析", fontsize=14, y=1.01)
+    plt.suptitle(
+        f"{stock_id} Monthly Revenue Analysis"
+        if english
+        else f"{stock_id} 每月營收分析",
+        fontsize=14,
+        y=1.01,
+    )
     plt.tight_layout()
     _save_chart_atomic(path)
     plt.close()
@@ -430,6 +490,7 @@ def get_eps_data(
     artifact_dir: Optional[str] = None,
     snapshot: Optional[Any] = None,
     official_financials: Optional[Dict[str, Any]] = None,
+    language: str = "zh-TW",
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     cached = cache_get(stock_id, "eps_yahoo_v4", max_age_sec=86400)
     if cached is not None:
@@ -479,7 +540,9 @@ def get_eps_data(
             }
         )
     records.sort(key=lambda x: (x["year"], x["quarter"]))
-    chart_path = _plot_eps_chart(records, stock_id, artifact_dir=artifact_dir)
+    chart_path = _plot_eps_chart(
+        records, stock_id, artifact_dir=artifact_dir, language=language
+    )
     return records, chart_path
 
 
@@ -617,7 +680,10 @@ def _fetch_eps_yfinance(
 
 @_plot_locked
 def _plot_eps_chart(
-    records: List[Dict[str, Any]], stock_id: str, artifact_dir: Optional[str] = None
+    records: List[Dict[str, Any]],
+    stock_id: str,
+    artifact_dir: Optional[str] = None,
+    language: str = "zh-TW",
 ) -> Optional[str]:
     if not records:
         return None
@@ -628,14 +694,17 @@ def _plot_eps_chart(
     colors = ["#4CAF50" if v >= 0 else "#F44336" for v in eps_values]
     ax.bar(range(len(eps_values)), eps_values, color=colors, alpha=0.8, width=0.5)
     ax.axhline(y=0, color="gray", linestyle="-", linewidth=0.5)
-    ax.set_ylabel("EPS (元)", fontsize=12)
+    english = language == "en"
+    ax.set_ylabel("EPS (TWD)" if english else "EPS (元)", fontsize=12)
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=45, fontsize=9)
     for i, v in enumerate(eps_values):
         offset = 0.1 if v >= 0 else -0.4
         ax.text(i, v + offset, f"{v:.2f}", ha="center", fontsize=9, fontweight="bold")
     ax.grid(True, alpha=0.3, axis="y")
-    plt.title(f"{stock_id} 各季 EPS", fontsize=14)
+    plt.title(
+        f"{stock_id} Quarterly EPS" if english else f"{stock_id} 各季 EPS", fontsize=14
+    )
     plt.tight_layout()
     _save_chart_atomic(path)
     plt.close()
@@ -645,13 +714,32 @@ def _plot_eps_chart(
 def get_basic_stock_info(
     stock_id: str, stock_info: Dict[str, Any], snapshot: Optional[Any] = None
 ) -> Dict[str, Any]:
+    # The official security registry is authoritative for the product type.
+    # Do not make ETF handling depend on Yahoo responding successfully: without
+    # this early flag a transient Yahoo failure sends an ETF down the company
+    # revenue/EPS and financial-statement pipeline.
+    is_official_etf = stock_info.get("asset_type") == "etf"
     result: Dict[str, Any] = {
         "stock_id": stock_id,
         "name": stock_info.get("name", ""),
         "industry": stock_info.get("industry", ""),
         "market": stock_info.get("market", ""),
+        "is_etf": is_official_etf,
         "report_date": datetime.now().strftime("%Y年%m月%d日"),
     }
+    if is_official_etf:
+        # These registry fields come from TWSE/TPEx official ETF sources.  They
+        # remain useful when Yahoo omits ETF metadata, especially TPEx's AUM.
+        for field in (
+            "fund_type",
+            "tracking_index",
+            "official_source",
+            "source_updated_at",
+        ):
+            if stock_info.get(field) not in (None, ""):
+                result[field] = stock_info[field]
+        if stock_info.get("aum") is not None:
+            result["total_assets"] = stock_info["aum"]
     try:
         mkt = stock_info.get("market", "")
         if snapshot is None:
@@ -670,7 +758,7 @@ def get_basic_stock_info(
         if not result.get("market") and info.get("market"):
             result["market"] = info["market"]
         qt = info.get("quoteType", "")
-        result["is_etf"] = stock_info.get("asset_type") == "etf" or qt == "ETF"
+        result["is_etf"] = is_official_etf or qt == "ETF"
         if "currentPrice" in info and info["currentPrice"] is not None:
             result["current_price"] = info["currentPrice"]
         elif "regularMarketPrice" in info and info["regularMarketPrice"] is not None:

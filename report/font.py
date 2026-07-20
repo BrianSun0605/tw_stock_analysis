@@ -1,14 +1,14 @@
 import os
 
-from config import FONT_PATH
+from config import PDF_FONT_PATH
 
 
 def get_chinese_font():
     """Return an existing CJK font path on native Windows, WSL, or Linux."""
     windows_dir = os.environ.get("WINDIR", r"C:\Windows")
     candidates = [
-        FONT_PATH,
-        os.path.join(os.path.dirname(FONT_PATH), "NotoSansTC-Regular.otf"),
+        PDF_FONT_PATH,
+        os.path.join(os.path.dirname(PDF_FONT_PATH), "NotoSansTC-Variable.ttf"),
         os.path.join(windows_dir, "Fonts", "msjh.ttc"),
         os.path.join(windows_dir, "Fonts", "msjhbd.ttc"),
         os.path.join(windows_dir, "Fonts", "mingliu.ttc"),

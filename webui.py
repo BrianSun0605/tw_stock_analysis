@@ -22,8 +22,9 @@ from flask import (
     request,
     send_from_directory,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-from config import OUTPUT_DIR
+from config import IS_WEB_MODE, OUTPUT_DIR
 from services.analysis import (
     AnalysisCancelled,
     AnalysisError,
@@ -53,6 +54,77 @@ STEP_PATTERN = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
 
 tasks = {}
 tasks_lock = threading.RLock()
+
+
+def _positive_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    """Read a bounded integer setting without letting a bad env var disable safety."""
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
+class SlidingWindowRateLimiter:
+    """Small in-memory limiter for the public single-instance demo.
+
+    It deliberately has no persistence: Render's free filesystem is ephemeral,
+    and the limiter only protects one running web instance from accidental or
+    abusive bursts.  A multi-instance production deployment should replace it
+    with a shared provider or an upstream WAF.
+    """
+
+    def __init__(self) -> None:
+        self._windows = {}
+        self._lock = threading.Lock()
+
+    def allow(
+        self,
+        *,
+        scope: str,
+        client_key: str,
+        limit: int,
+        period_seconds: int,
+    ) -> tuple[bool, int]:
+        now = time.monotonic()
+        key = (scope, client_key)
+        with self._lock:
+            window = self._windows.setdefault(key, [])
+            cutoff = now - period_seconds
+            while window and window[0] <= cutoff:
+                window.pop(0)
+            if len(window) >= limit:
+                retry_after = max(1, math.ceil(period_seconds - (now - window[0])))
+                return False, retry_after
+            window.append(now)
+            return True, 0
+
+
+def _client_key() -> str:
+    # In public mode ProxyFix has already replaced remote_addr with the address
+    # forwarded by Render.  Never use a client-controlled header directly.
+    return (request.remote_addr or "unknown")[:128]
+
+
+def _check_rate_limit(app: Flask, scope: str):
+    limiter = app.config.get("RATE_LIMITER")
+    policy = app.config.get("RATE_LIMITS", {}).get(scope)
+    if limiter is None or policy is None:
+        return None
+    limit, period_seconds = policy
+    allowed, retry_after = limiter.allow(
+        scope=scope,
+        client_key=_client_key(),
+        limit=limit,
+        period_seconds=period_seconds,
+    )
+    if allowed:
+        return None
+    response = jsonify({"error": "請稍後再試。"})
+    response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _valid_query(value) -> str:
@@ -257,6 +329,8 @@ def _run_analysis(query: str, task_id: str) -> None:
             },
         )
 
+    with tasks_lock:
+        language = tasks.get(task_id, {}).get("language", "zh-TW")
     try:
         result = analyze_service(
             query,
@@ -267,6 +341,7 @@ def _run_analysis(query: str, task_id: str) -> None:
             report_progress=publish_report_progress,
             cancel_event=tasks[task_id]["cancel_event"],
             deadline=tasks[task_id]["deadline"],
+            language=language,
         )
         if not preview_published:
             publish_preview(result.preview)
@@ -286,7 +361,7 @@ def _run_analysis(query: str, task_id: str) -> None:
         message = str(exc)
         _publish(task_id, "error", message)
     except Exception:
-        logger.exception("web analysis failed for %s", query)
+        logger.exception("web analysis failed")
         _publish(task_id, "error", "分析過程發生異常，請稍後再試。")
 
 
@@ -307,12 +382,14 @@ def _run_report(task_id: str) -> None:
         result = task.get("analysis_result") if task else None
         cancel_event = task.get("cancel_event") if task else None
         deadline = task.get("deadline") if task else None
+        language = task.get("language", "zh-TW") if task else "zh-TW"
     if result is None:
         _publish(task_id, "report_error", "分析資料已過期，請重新分析後再產生 PDF。")
         return
     try:
         output_path = generate_report_service(
             result,
+            language=language,
             progress_callback=publish_report_progress,
             cancel_event=cancel_event,
             deadline=deadline,
@@ -345,13 +422,48 @@ def _last_event_id() -> int:
         return 0
 
 
-def create_app(*, testing: bool = False) -> Flask:
+def create_app(
+    *,
+    testing: bool = False,
+    public_mode: bool | None = None,
+    enforce_rate_limits: bool | None = None,
+) -> Flask:
+    public_mode = IS_WEB_MODE if public_mode is None else bool(public_mode)
+    if enforce_rate_limits is None:
+        enforce_rate_limits = public_mode and not testing
     app = Flask(__name__)
     app.config.update(
         TESTING=testing,
+        PUBLIC_MODE=public_mode,
+        LOCAL_SHUTDOWN_ENABLED=not public_mode,
         SHUTDOWN_TOKEN=secrets.token_urlsafe(32),
         SHUTDOWN_CALLBACK=None,
+        RATE_LIMITER=SlidingWindowRateLimiter() if enforce_rate_limits else None,
+        RATE_LIMITS={
+            "search": (
+                _positive_int_env(
+                    "TWSTOCK_SEARCHES_PER_MINUTE",
+                    60,
+                    minimum=10,
+                    maximum=600,
+                ),
+                60,
+            ),
+            "analyze": (
+                _positive_int_env(
+                    "TWSTOCK_ANALYSES_PER_HOUR",
+                    6,
+                    minimum=1,
+                    maximum=60,
+                ),
+                3600,
+            ),
+        },
     )
+    if public_mode:
+        # Render terminates TLS and proxies requests to this process.  Trust
+        # exactly that one proxy so rate limits see the original client address.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     if not testing:
         cleanup_runtime_storage(force=True)
@@ -379,7 +491,13 @@ def create_app(*, testing: bool = False) -> Flask:
         response = make_response(
             render_template(
                 "index.html",
-                shutdown_token=app.config["SHUTDOWN_TOKEN"],
+                public_mode=app.config["PUBLIC_MODE"],
+                local_shutdown_enabled=app.config["LOCAL_SHUTDOWN_ENABLED"],
+                shutdown_token=(
+                    app.config["SHUTDOWN_TOKEN"]
+                    if app.config["LOCAL_SHUTDOWN_ENABLED"]
+                    else None
+                ),
             )
         )
         response.headers["Cache-Control"] = "no-store"
@@ -390,6 +508,9 @@ def create_app(*, testing: bool = False) -> Flask:
         query = _valid_query(request.args.get("q", ""))
         if not query:
             return jsonify([])
+        limited = _check_rate_limit(app, "search")
+        if limited is not None:
+            return limited
         results = search_stock(query)
         return jsonify(
             [
@@ -419,6 +540,13 @@ def create_app(*, testing: bool = False) -> Flask:
         )
         if not query:
             return jsonify({"error": "請輸入 1–64 字的股票代號或名稱"}), 400
+        limited = _check_rate_limit(app, "analyze")
+        if limited is not None:
+            return limited
+        language = (
+            payload.get("language", "zh-TW") if isinstance(payload, dict) else "zh-TW"
+        )
+        language = language if language in {"zh-TW", "en"} else "zh-TW"
         _prune_tasks()
         with tasks_lock:
             active_count = sum(
@@ -430,6 +558,7 @@ def create_app(*, testing: bool = False) -> Flask:
             now = time.time()
             task = {
                 "query": query,
+                "language": language,
                 "status": "queued",
                 "stage": 0,
                 "stage_total": 5,
@@ -578,30 +707,36 @@ def create_app(*, testing: bool = False) -> Flask:
             return "Not Found", 404
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
-    @app.post("/shutdown")
-    def shutdown():
-        remote = request.remote_addr or ""
-        token = request.headers.get("X-Shutdown-Token", "")
-        origin = request.headers.get("Origin", "")
-        host = request.host.split(":", 1)[0].lower()
-        loopback = remote in ("127.0.0.1", "::1")
-        allowed_host = host in ("127.0.0.1", "localhost", "::1")
-        allowed_origin = not origin or origin == f"http://{request.host}"
-        if not (
-            loopback
-            and allowed_host
-            and allowed_origin
-            and hmac.compare_digest(token, app.config["SHUTDOWN_TOKEN"])
-        ):
-            return jsonify({"error": "forbidden"}), 403
-        callback = app.config.get("SHUTDOWN_CALLBACK")
-        if callback:
-            threading.Thread(target=callback, daemon=True).start()
-        return jsonify({"status": "shutting_down"})
+    if app.config["LOCAL_SHUTDOWN_ENABLED"]:
+
+        @app.post("/shutdown")
+        def shutdown():
+            remote = request.remote_addr or ""
+            token = request.headers.get("X-Shutdown-Token", "")
+            origin = request.headers.get("Origin", "")
+            host = request.host.split(":", 1)[0].lower()
+            loopback = remote in ("127.0.0.1", "::1")
+            allowed_host = host in ("127.0.0.1", "localhost", "::1")
+            allowed_origin = not origin or origin == f"http://{request.host}"
+            if not (
+                loopback
+                and allowed_host
+                and allowed_origin
+                and hmac.compare_digest(token, app.config["SHUTDOWN_TOKEN"])
+            ):
+                return jsonify({"error": "forbidden"}), 403
+            callback = app.config.get("SHUTDOWN_CALLBACK")
+            if callback:
+                threading.Thread(target=callback, daemon=True).start()
+            return jsonify({"status": "shutting_down"})
 
     @app.get("/ping")
     def ping():
         return "", 204
+
+    @app.get("/healthz")
+    def healthz():
+        return jsonify({"status": "ok", "version": __version__})
 
     @app.get("/manifest.json")
     def manifest():
@@ -631,7 +766,7 @@ app = create_app()
 
 
 def _open_browser(port: int) -> None:
-    if os.getenv("TWSTOCK_NO_BROWSER") == "1":
+    if IS_WEB_MODE or os.getenv("TWSTOCK_NO_BROWSER") == "1":
         return
 
     def open_later():
@@ -652,7 +787,7 @@ def _close_waitress_server(server) -> None:
         wasyncore.close_all(channel_map, ignore_all=True)
 
 
-def run_server(port: int = 5000) -> None:
+def run_server(port: int = 5000, host: str | None = None) -> None:
     from waitress import create_server
 
     threading.Thread(
@@ -660,11 +795,34 @@ def run_server(port: int = 5000) -> None:
         daemon=True,
         name="security-registry-refresh",
     ).start()
-    server = create_server(app, host="127.0.0.1", port=port)
-    app.config["SHUTDOWN_CALLBACK"] = lambda: _close_waitress_server(server)
-    logger.info("啟動 Web UI：http://127.0.0.1:%s", port)
-    _open_browser(port)
+    public_mode = bool(app.config["PUBLIC_MODE"])
+    host = host or ("0.0.0.0" if public_mode else "127.0.0.1")
+    server = create_server(
+        app,
+        host=host,
+        port=port,
+        threads=8 if public_mode else 4,
+    )
+    if app.config["LOCAL_SHUTDOWN_ENABLED"]:
+        app.config["SHUTDOWN_CALLBACK"] = lambda: _close_waitress_server(server)
+    logger.info("啟動 Web UI：http://%s:%s", host, port)
+    if not public_mode:
+        _open_browser(port)
     server.run()
+
+
+def web_main() -> int:
+    """Start the public web service expected by Render and other PaaS hosts."""
+    try:
+        port = int(os.getenv("PORT", "5000"))
+    except ValueError:
+        logger.error("PORT 必須是 1～65535 的整數")
+        return 2
+    if not 1 <= port <= 65535:
+        logger.error("PORT 必須是 1～65535 的整數")
+        return 2
+    run_server(port, host="0.0.0.0")
+    return 0
 
 
 def desktop_main(argv=None) -> int:
@@ -697,4 +855,4 @@ def desktop_main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(desktop_main())
+    raise SystemExit(web_main() if IS_WEB_MODE else desktop_main())

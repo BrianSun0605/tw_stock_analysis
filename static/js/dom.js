@@ -38,25 +38,34 @@ export function present(value) {
   return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
 }
 
+function displayLocale() {
+  return document.documentElement.dataset.locale === "en" ? "en-US" : "zh-TW";
+}
+
+function unavailable() {
+  return document.documentElement.dataset.locale === "en" ? "Insufficient data" : "資料不足";
+}
+
 export function number(value, digits = 2) {
-  if (!present(value)) return "資料不足";
-  return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: digits }).format(Number(value));
+  if (!present(value)) return unavailable();
+  return new Intl.NumberFormat(displayLocale(), { maximumFractionDigits: digits }).format(Number(value));
 }
 
 export function money(value, currency = true) {
-  if (!present(value)) return "資料不足";
-  return `${currency ? "NT$ " : ""}${number(value, 2)}`;
+  if (!present(value)) return unavailable();
+  const prefix = currency ? (document.documentElement.dataset.locale === "en" ? "TWD " : "NT$ ") : "";
+  return `${prefix}${number(value, 2)}`;
 }
 
 export function percentPoint(value, digits = 2) {
-  return present(value) ? `${number(value, digits)}%` : "資料不足";
+  return present(value) ? `${number(value, digits)}%` : unavailable();
 }
 
 export function percentDecimal(value, digits = 2) {
-  return present(value) ? `${number(Number(value) * 100, digits)}%` : "資料不足";
+  return present(value) ? `${number(Number(value) * 100, digits)}%` : unavailable();
 }
 
 export function compactMoney(value) {
-  if (!present(value)) return "資料不足";
-  return new Intl.NumberFormat("zh-TW", { notation: "compact", maximumFractionDigits: 2 }).format(Number(value));
+  if (!present(value)) return unavailable();
+  return new Intl.NumberFormat(displayLocale(), { notation: "compact", maximumFractionDigits: 2 }).format(Number(value));
 }

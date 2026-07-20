@@ -114,6 +114,33 @@ def test_basic_info_preserves_official_name_and_normalizes_percent(monkeypatch):
     assert round(result["dividendYield"], 5) == round(20 / 982, 5)
 
 
+def test_basic_info_keeps_official_etf_identity_and_tpex_aum_on_yahoo_failure(
+    monkeypatch,
+):
+    class _FailingSnapshot:
+        def info(self):
+            raise RuntimeError("Yahoo temporarily unavailable")
+
+    monkeypatch.setattr(stock_data, "YFINANCE_EXCEPTIONS", (RuntimeError,))
+    result = stock_data.get_basic_stock_info(
+        "006201",
+        {
+            "name": "元大富櫃50",
+            "industry": "ETF",
+            "market": "上櫃",
+            "asset_type": "etf",
+            "aum": 937_201_799,
+            "tracking_index": "櫃買富櫃50指數",
+            "official_source": "https://official.example/etf",
+        },
+        snapshot=_FailingSnapshot(),
+    )
+
+    assert result["is_etf"] is True
+    assert result["total_assets"] == 937_201_799
+    assert result["tracking_index"] == "櫃買富櫃50指數"
+
+
 def test_bing_provider_parses_rss_items(monkeypatch):
     rss = b"""<?xml version="1.0"?>
     <rss><channel><item>

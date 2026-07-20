@@ -1,10 +1,14 @@
-const CACHE_NAME = "tw-stock-v10";
+const CACHE_NAME = "tw-stock-v24";
 const SHELL = [
-  "/static/css/app.css?v=9",
-  "/static/js/app.js?v=7",
+  "/static/css/app.css?v=20",
+  "/static/js/app.js?v=20",
+  "/static/js/beginner.js",
   "/static/js/api.js",
   "/static/js/dom.js",
   "/static/js/export.js",
+  "/static/js/learning.js",
+  "/static/js/learning-curriculum.js",
+  "/static/js/i18n.js",
   "/static/js/render.js",
   "/picture/icon/app-icon.svg",
 ];

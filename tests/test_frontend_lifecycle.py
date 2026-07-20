@@ -39,13 +39,18 @@ def test_frontend_can_recover_task_and_preserve_preview():
     assert "generatePdf" in app
     assert "分析結果已可查看" in app
     assert "PDF 報告已完成" in app
-    assert 'for (const id of ["downloadPdf", "progressDownloadPdf"])' in app
+    # A completed report is downloadable from the workflow panel only; the
+    # result-card duplicate is deliberately hidden.
+    assert 'for (const id of ["progressDownloadPdf"])' in app
+    assert 'byId("downloadPdf").hidden = true;' in app
 
 
 def test_service_worker_refreshes_changed_static_assets():
     worker = (ROOT / "static" / "service-worker.js").read_text(encoding="utf-8")
     app = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
-    assert 'CACHE_NAME = "tw-stock-v10"' in worker
+    assert 'CACHE_NAME = "tw-stock-v24"' in worker
+    assert '"/static/js/learning.js"' in worker
+    assert '"/static/js/learning-curriculum.js"' in worker
     assert "networkFirst" in worker
     assert 'url.pathname === "/"' in worker
     assert '  "/",' not in worker

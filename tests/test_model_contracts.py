@@ -2,10 +2,12 @@ import json
 import uuid
 from pathlib import Path
 
+import pandas as pd
+
 from models import growth_model
 from models.safety_model import assess_company_safety, assess_etf_structure
 from services.analysis import AnalysisError, _ensure_supported_analysis_type
-from stock.mops_history import _parse_archive, parse_month_html
+from stock.mops_history import _enrich_comparisons, _parse_archive, parse_month_html
 
 
 def test_mops_individual_month_parser_reads_official_table():
@@ -61,6 +63,21 @@ def test_mops_archive_parser_supports_official_big5_rows():
     assert parsed["1499"] == 500
 
 
+def test_mops_history_derives_chart_comparisons_from_archive_months():
+    records = [
+        {"year": 2025, "month": 6, "revenue": 100},
+        {"year": 2026, "month": 5, "revenue": 110},
+        {"year": 2026, "month": 6, "revenue": 120},
+    ]
+
+    _enrich_comparisons(records)
+
+    assert records[-1]["prev_month_revenue"] == 110
+    assert records[-1]["last_year_revenue"] == 100
+    assert round(records[-1]["mom"], 2) == 9.09
+    assert round(records[-1]["yoy"], 2) == 20
+
+
 def test_etf_growth_model_is_not_applicable():
     result = growth_model.assess_revenue_growth([], {"asset_type": "etf"})
     assert result["status"] == "not_applicable"
@@ -96,8 +113,9 @@ def test_failed_deployment_gate_hides_formal_grade_but_keeps_experimental(monkey
             for month in range(1, 25)
         ]
         result = growth_model.assess_revenue_growth(records, {"asset_type": "stock"})
-        assert result["status"] == "experimental_not_deployable"
+        assert result["status"] == "reference_estimate"
         assert result["rating"] is None
+        assert result["reference_rating"] in "ABCDEF"
         assert result["experimental_rating"] in "ABCDEF"
         assert (
             result["prediction_interval_80"]["low"]
@@ -108,37 +126,79 @@ def test_failed_deployment_gate_hides_formal_grade_but_keeps_experimental(monkey
 
 
 def test_growth_and_safety_grades_are_not_averaged_together():
+    period = pd.Timestamp("2025-12-31")
+
+    def statements(
+        *,
+        assets,
+        liabilities,
+        current_assets,
+        current_liabilities,
+        retained,
+        ebit,
+        sales,
+    ):
+        balance = pd.DataFrame(
+            {
+                period: [
+                    assets,
+                    liabilities,
+                    current_assets,
+                    current_liabilities,
+                    retained,
+                ]
+            },
+            index=[
+                "Total Assets",
+                "Total Liabilities Net Minority Interest",
+                "Current Assets",
+                "Current Liabilities",
+                "Retained Earnings",
+            ],
+        )
+        income = pd.DataFrame({period: [ebit, sales]}, index=["EBIT", "Total Revenue"])
+        return balance, income
+
+    safe_balance, safe_income = statements(
+        assets=1000,
+        liabilities=200,
+        current_assets=500,
+        current_liabilities=200,
+        retained=500,
+        ebit=300,
+        sales=1000,
+    )
     safe = assess_company_safety(
         {"name": "一般公司", "industry": "半導體", "asset_type": "stock"},
-        {
-            "totalAssets": 1000,
-            "totalLiabilities": 200,
-            "currentAssets": 500,
-            "currentLiabilities": 200,
-            "retainedEarnings": 500,
-            "totalRevenue": 1000,
-            "operatingIncome": 300,
-            "netIncomeToCommon": 250,
-        },
+        {"marketCap": 1500},
+        balance_sheet=safe_balance,
+        financials=safe_income,
+    )
+    risky_balance, risky_income = statements(
+        assets=1000,
+        liabilities=950,
+        current_assets=100,
+        current_liabilities=400,
+        retained=-300,
+        ebit=-200,
+        sales=1000,
     )
     risky = assess_company_safety(
         {"name": "一般公司", "industry": "半導體", "asset_type": "stock"},
-        {
-            "totalAssets": 1000,
-            "totalLiabilities": 950,
-            "currentAssets": 100,
-            "currentLiabilities": 400,
-            "retainedEarnings": -300,
-            "totalRevenue": 1000,
-            "operatingIncome": -200,
-            "netIncomeToCommon": -300,
-        },
+        {"marketCap": 100},
+        balance_sheet=risky_balance,
+        financials=risky_income,
     )
     assert safe["rating"] is None
     assert risky["rating"] is None
-    assert safe["experimental_rating"] in ("A", "B")
-    assert risky["experimental_rating"] in ("E", "F")
-    assert safe["status"] == "experimental_not_validated"
+    assert safe["reference_rating"] == "A"
+    assert risky["reference_rating"] == "E"
+    assert safe["experimental_rating"] is None
+    assert risky["experimental_rating"] is None
+    assert safe["reference_band"] == "safe_reference"
+    assert risky["reference_band"] == "distress_reference"
+    assert safe["status"] == "reference_rating"
+    assert safe["formula"]["type"] == "altman_z_public_company_v1"
     assert "growth" not in safe
 
 
@@ -149,6 +209,62 @@ def test_financial_company_waits_for_specialized_safety_model():
     )
     assert result["status"] == "specialized_model_pending"
     assert result["rating"] is None
+
+
+def test_financial_safety_refuses_to_mix_unaligned_annual_statements():
+    balance = pd.DataFrame(
+        {
+            pd.Timestamp("2025-12-31"): [1000, 500, 300, 200, 100],
+        },
+        index=[
+            "Total Assets",
+            "Total Liabilities Net Minority Interest",
+            "Current Assets",
+            "Current Liabilities",
+            "Retained Earnings",
+        ],
+    )
+    income = pd.DataFrame(
+        {pd.Timestamp("2024-12-31"): [100, 900]},
+        index=["EBIT", "Total Revenue"],
+    )
+    result = assess_company_safety(
+        {"name": "一般公司", "industry": "半導體", "asset_type": "stock"},
+        {"marketCap": 800},
+        balance_sheet=balance,
+        financials=income,
+    )
+    assert result["status"] == "annual_statement_unavailable"
+    assert result["rating"] is None
+    assert result["formula"]["type"] == "altman_z_public_company_v1"
+
+
+def test_financial_safety_uses_available_official_quarterly_fields_for_reference_tier():
+    result = assess_company_safety(
+        {"name": "Test Company", "industry": "Semiconductor", "asset_type": "stock"},
+        {"marketCap": 2_000, "price_date": "2026-07-20"},
+        financial_snapshot={
+            "observed_at": "2026-Q2",
+            "quarter": 2,
+            "fields": {
+                "totalAssets": 1_000,
+                "currentAssets": 600,
+                "currentLiabilities": 300,
+                "retainedEarnings": 250,
+                "totalLiabilities": 450,
+                "operatingIncome": 120,
+                "totalRevenue": 1_000,
+            },
+        },
+    )
+    assert result["rating"] is None
+    assert result["reference_rating"] == "A"
+    assert result["status"] == "reference_rating"
+    assert (
+        result["formula"]["type"] == "taiwan_official_quarterly_structure_reference_v1"
+    )
+    assert result["formula"]["annualization_factor"] == 2.0
+    assert result["coverage"] == 1.0
 
 
 def test_etf_uses_structure_screen_not_company_formula():

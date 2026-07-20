@@ -50,6 +50,34 @@ def test_tokenized_homepage_is_never_cached():
     assert response.headers["Cache-Control"] == "no-store"
 
 
+def test_public_mode_removes_shutdown_surface_and_has_health_check():
+    app = create_app(testing=True, public_mode=True)
+    client = app.test_client()
+
+    homepage = client.get("/")
+    assert app.config["PUBLIC_MODE"] is True
+    assert app.config["LOCAL_SHUTDOWN_ENABLED"] is False
+    assert b"shutdownApp" not in homepage.data
+    assert b"shutdown-token" not in homepage.data
+    assert client.post("/shutdown").status_code == 404
+    assert client.get("/healthz").get_json()["status"] == "ok"
+
+
+def test_public_mode_rate_limits_searches_per_client():
+    app = create_app(
+        testing=True,
+        public_mode=True,
+        enforce_rate_limits=True,
+    )
+    app.config["RATE_LIMITS"]["search"] = (1, 60)
+    client = app.test_client()
+
+    assert client.get("/search?q=0050").status_code == 200
+    limited = client.get("/search?q=2330")
+    assert limited.status_code == 429
+    assert limited.headers["Retry-After"] == "60"
+
+
 def test_search_rejects_unknown_numeric_security_code():
     response = create_app(testing=True).test_client().get("/search?q=99999999")
     assert response.status_code == 200

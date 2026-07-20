@@ -17,10 +17,14 @@ datas = [
     (str(ROOT / "stock" / "official_stock_snapshot.json"), "stock"),
     (str(ROOT / "models" / "artifacts"), "models/artifacts"),
     (str(ROOT / "README.md"), "."),
+    (str(ROOT / "README.en.md"), "."),
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "."),
+    (str(ROOT / "THIRD_PARTY_NOTICES.en.md"), "."),
     (str(ROOT / "docs" / "PRIVACY.md"), "docs"),
+    (str(ROOT / "docs" / "PRIVACY.en.md"), "docs"),
     (str(ROOT / "docs" / "UI_DESIGN_SYSTEM.md"), "docs"),
+    (str(ROOT / "docs" / "UI_DESIGN_SYSTEM.en.md"), "docs"),
 ]
 binaries = []
 hiddenimports = collect_submodules(

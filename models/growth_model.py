@@ -11,10 +11,18 @@ import numpy as np
 from models.growth_features import extract_growth_features, feature_vector
 
 
-ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "growth_revenue_v1.json"
+ARTIFACT_PATH = Path(__file__).resolve().parent / "artifacts" / "growth_revenue_v2.json"
 
 
-def _experimental_grade(prediction: float, probability: float) -> str:
+def _reference_grade(prediction: float, probability: float) -> str:
+    """Return a transparent educational tier, not a validated credit grade.
+
+    The thresholds are stored with the model artifact and combine the model's
+    expected 12-month revenue growth with its empirical positive-growth share.
+    They remain available even while the stricter *formal* deployment gate is
+    incomplete, because hiding a useful, clearly labelled reference tier does
+    not improve the underlying evidence.
+    """
     if prediction >= 0.15 and probability >= 0.80:
         return "A"
     if prediction >= 0.08 and probability >= 0.70:
@@ -31,6 +39,7 @@ def _experimental_grade(prediction: float, probability: float) -> str:
 def unavailable(status: str, note: str) -> Dict[str, Any]:
     return {
         "rating": None,
+        "reference_rating": None,
         "experimental_rating": None,
         "status": status,
         "target": "未來連續 12 個月營收成長",
@@ -43,6 +52,8 @@ def unavailable(status: str, note: str) -> Dict[str, Any]:
             "target": "未來 EPS 成長",
             "note": "目前沒有通過 point-in-time 回測的台股 EPS 預測模型。",
         },
+        "formula": None,
+        "disclaimer": "本項為研究與教學參考，不構成投資建議或報酬保證。",
         "note": note,
     }
 
@@ -65,9 +76,14 @@ def assess_revenue_growth(
         return unavailable("model_missing", "找不到已驗證的成長模型 artifact。")
     artifact = json.loads(ARTIFACT_PATH.read_text(encoding="utf-8"))
     ordered = sorted(records, key=lambda item: (item["year"], item["month"]))
-    if len(ordered) < 24:
-        return unavailable("insufficient_data", "至少需要連續 24 個月官方營收。")
-    window = ordered[-24:]
+    required_history = int(artifact.get("history_months", 24))
+    if required_history < 24 or required_history > 60:
+        return unavailable("model_incompatible", "成長模型的歷史資料需求設定無效。")
+    if len(ordered) < required_history:
+        return unavailable(
+            "insufficient_data", f"至少需要連續 {required_history} 個月官方營收。"
+        )
+    window = ordered[-required_history:]
     periods = [int(item["year"]) * 12 + int(item["month"]) - 1 for item in window]
     if any(current - previous != 1 for previous, current in zip(periods, periods[1:])):
         return unavailable("insufficient_data", "最近 24 個月營收不連續。")
@@ -78,13 +94,22 @@ def assess_revenue_growth(
     mean = np.asarray(artifact["feature_mean"], dtype=float)
     std = np.asarray(artifact["feature_std"], dtype=float)
     coefficients = np.asarray(artifact["coefficients"], dtype=float)
+    if not (vector.shape == mean.shape == std.shape == coefficients.shape):
+        return unavailable(
+            "model_incompatible", "成長模型的特徵定義與 artifact 不一致。"
+        )
     standardized = (vector - mean) / std
-    prediction = float(
+    raw_prediction = float(
         np.clip(
             float(artifact["intercept"]) + standardized @ coefficients,
             -0.8,
             3.0,
         )
+    )
+    shrinkage = float(artifact.get("shrinkage", 1.0))
+    calibration_offset = float(artifact.get("median_calibration_offset", 0.0))
+    prediction = float(
+        np.clip(raw_prediction * shrinkage + calibration_offset, -0.8, 3.0)
     )
     residuals = np.asarray(artifact["residual_quantiles"], dtype=float)
     probability = float(np.mean(prediction + residuals > 0))
@@ -95,10 +120,44 @@ def assess_revenue_growth(
     confidence = "low"
     if gate_passed and in_distribution:
         confidence = "high" if high - low <= 0.25 else "medium"
+    formula = dict(artifact.get("formula") or {})
+    formula.update(
+        {
+            "history_months": required_history,
+            "intercept": float(artifact["intercept"]),
+            "shrinkage": shrinkage,
+            "median_calibration_offset": calibration_offset,
+            "features": [
+                {
+                    "name": name,
+                    "coefficient": float(coefficient),
+                    "mean": float(center),
+                    "std": float(scale),
+                    "value": float(features[name]),
+                }
+                for name, coefficient, center, scale in zip(
+                    artifact.get("features", []), coefficients, mean, std
+                )
+            ],
+        }
+    )
+    failed_checks = [
+        key
+        for key, check in (
+            artifact.get("deployment_gate", {}).get("checks") or {}
+        ).items()
+        if not check.get("passed")
+    ]
+    reference_rating = _reference_grade(prediction, probability)
     return {
-        "rating": _experimental_grade(prediction, probability) if gate_passed else None,
-        "experimental_rating": _experimental_grade(prediction, probability),
-        "status": "validated" if gate_passed else "experimental_not_deployable",
+        # ``rating`` deliberately remains reserved for a future formal grade.
+        # The product now shows this usable tier under its honest label rather
+        # than blocking all output on a stricter research-deployment gate.
+        "rating": _reference_grade(prediction, probability) if gate_passed else None,
+        "reference_rating": reference_rating,
+        "experimental_rating": reference_rating,
+        "rating_scheme": "revenue_growth_reference_tier_v1",
+        "status": "validated" if gate_passed else "reference_estimate",
         "target": artifact["target"],
         "prediction": prediction,
         "prediction_pct": round(prediction * 100, 2),
@@ -115,15 +174,18 @@ def assess_revenue_growth(
         "test_metrics": artifact["test_metrics"],
         "deployment_gate": artifact["deployment_gate"],
         "feature_values": features,
+        "formula": formula,
         "input_source": "MOPS official monthly archives",
         "secondary_eps_target": {
             "status": "not_validated",
             "target": "未來 EPS 成長",
             "note": "官方季度 EPS 歷史尚未完成 point-in-time 回測，因此不產生第二個預測數字。",
         },
+        "disclaimer": "本項為研究與教學參考，不構成投資建議或報酬保證。",
         "note": (
-            "模型未打敗事先指定的 MAE 基準，且歷史封存不是完整 point-in-time；"
-            "只顯示實驗性估計，不顯示正式成長評級。"
+            "正式評級仍停用：未通過的部署門檻為 "
+            + "、".join(failed_checks)
+            + "。目前僅顯示可追溯公式的參考估計，不預測股價或投資報酬。"
             if not gate_passed
             else ""
         ),

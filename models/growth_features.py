@@ -69,7 +69,12 @@ def extract_growth_features(values: Iterable[float]) -> Optional[Dict[str, float
         "monthly_yoy_volatility": float(np.std(np.clip(monthly_yoy, -3, 5))),
         "log_revenue_trend_annualized": annualized_trend,
         "seasonality_variation": seasonality,
-        "log_trailing_revenue": float(np.log1p(current.sum())),
+        # ``revenue_thousand`` values are normally in the millions to
+        # trillions.  Natural log followed by the shared upper clip of 8 made
+        # this feature a constant for every eligible issuer, so the model
+        # could never use firm scale.  Base-10 log keeps the same monotonic,
+        # unit-robust interpretation while preserving cross-sectional signal.
+        "log_trailing_revenue": float(np.log10(max(float(current.sum()), 1.0))),
     }
     return {name: float(np.clip(raw[name], -5.0, 8.0)) for name in FEATURE_NAMES}
 

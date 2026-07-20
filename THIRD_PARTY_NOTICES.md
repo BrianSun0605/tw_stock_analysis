@@ -10,10 +10,11 @@
 - 上游：notofonts/noto-cjk，Noto Sans CJK Traditional Chinese。
 - 授權：SIL Open Font License 1.1。
 - 專案內授權副本：assets/licenses/NotoSansCJK-OFL.txt。
-- 字型檔：fonts/NotoSansTC-Regular.otf、fonts/NotoSansTC-Bold.otf。
+- 字型檔：fonts/NotoSansTC-Regular.otf、fonts/NotoSansTC-Bold.otf，以及 PDF 專用的 fonts/NotoSansTC-Variable.ttf。
 - 版本：2.004。
 - SHA-256（Regular）：5BAB0CB3C1CF89DDE07C4A95A4054B195AFBCFE784D69D75C340780712237537。
 - SHA-256（Bold）：55420B259EB119BF5F2A0AADBA10CF9D736C12D64AB93E78546D69EF5F43558B。
+- SHA-256（PDF TrueType）：864727D210D54F2537BBE23B3A839436C3992AF72DE9322AF5270897246BD44F。
 
 字型可與軟體一起散布，但不能把字型單獨販售；若修改字型，仍需遵守 OFL 與保留名稱條款。
 

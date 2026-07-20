@@ -1,0 +1,272 @@
+{
+  "alpha": 0.1,
+  "applicable_assets": [
+    "stock",
+    "tdr"
+  ],
+  "baseline_metrics": {
+    "best_mae": 0.17881386830934376,
+    "seasonal_naive_zero_growth_mae": 0.17881386830934376,
+    "trailing_12m_growth_mae": 0.3015663959544505
+  },
+  "benchmark": "best MAE of zero-growth and trailing-12-month-growth baselines",
+  "coefficients": [
+    0.011856365885667861,
+    0.023034083364450376,
+    -0.040593755644259315,
+    0.025468486236709685,
+    0.03217466778401159,
+    -0.017185191407931597,
+    0.05267354188718834,
+    -0.016381888213416025,
+    -0.007935736679053493
+  ],
+  "created_at": "2026-07-20T08:01:09.159928+00:00",
+  "deployment_gate": {
+    "checks": {
+      "brier_score": {
+        "passed": true,
+        "threshold": "<= 0.24",
+        "value": 0.2314
+      },
+      "direction_accuracy": {
+        "passed": true,
+        "threshold": ">= 0.55",
+        "value": 0.6484
+      },
+      "interval_80_coverage": {
+        "passed": true,
+        "threshold": "0.75 to 0.85",
+        "value": 0.8243
+      },
+      "mae_vs_best_baseline": {
+        "passed": false,
+        "threshold": "<= 0.1699 (beat by 5%)",
+        "value": 0.1703
+      },
+      "point_in_time_archive": {
+        "passed": false,
+        "threshold": "must be true",
+        "value": false
+      },
+      "sample_count": {
+        "passed": true,
+        "threshold": ">= 1,000",
+        "value": 6619
+      }
+    },
+    "passed": false
+  },
+  "feature_mean": [
+    0.16327378223723307,
+    0.14045558170395359,
+    0.10333351519846727,
+    0.0734030651256705,
+    0.08409027572802447,
+    0.3342393999360909,
+    0.2680758712257682,
+    0.23278564249254505,
+    6.514952484587915
+  ],
+  "feature_std": [
+    0.7005133470213646,
+    0.6476729318095472,
+    0.5566062535101901,
+    0.6022825666435584,
+    0.5608741810196158,
+    0.3771290679017519,
+    0.9467109671310305,
+    0.22590546467018083,
+    0.6529294539168086
+  ],
+  "features": [
+    "growth_3m_yoy",
+    "growth_6m_yoy",
+    "growth_12m_yoy",
+    "growth_acceleration",
+    "recent_momentum",
+    "monthly_yoy_volatility",
+    "log_revenue_trend_annualized",
+    "seasonality_variation",
+    "log_trailing_revenue"
+  ],
+  "formula": {
+    "grade_rule": {
+      "A": "prediction >= 0.15 and positive_growth_probability >= 0.80",
+      "B": "prediction >= 0.08 and positive_growth_probability >= 0.70",
+      "C": "prediction >= 0.00 and positive_growth_probability >= 0.58",
+      "D": "positive_growth_probability >= 0.42",
+      "E": "positive_growth_probability >= 0.30",
+      "F": "otherwise"
+    },
+    "prediction_equation": "prediction = clip(-0.80, 3.00, shrinkage * raw + median_calibration_offset)",
+    "raw_equation": "raw = clip(-0.80, 3.00, intercept + sum(coefficient_i * ((feature_i - mean_i) / std_i)))",
+    "type": "ridge_shrink_median_v1",
+    "units": "decimal growth rate; 0.10 means +10% next-12-month revenue growth"
+  },
+  "history_months": 24,
+  "intercept": 0.11254967907333452,
+  "limitations": [
+    "official archive is revision-latest, not immutable point-in-time data",
+    "revenue-only model cannot anticipate structural corporate events",
+    "extreme target growth outside -80% to +300% is out of scope",
+    "does not predict stock returns"
+  ],
+  "median_calibration_offset": -0.08584339876749048,
+  "model_version": "growth_revenue_v2",
+  "not_applicable_assets": [
+    "etf"
+  ],
+  "population_coverage": {
+    "coverage_note": "All issuers with 24 consecutive reported months, a positive trailing revenue base, and an in-scope future target are included; this is not a single-security or single-industry backtest.",
+    "eligible_issuer_count": 1732,
+    "source_issuer_count": 1849,
+    "source_record_count": 166043,
+    "test_issuer_count": 1696,
+    "test_issuer_count_by_market": {
+      "上市": 931,
+      "上櫃": 765
+    },
+    "test_sample_count": 6619
+  },
+  "residual_quantiles": [
+    -1.6570489535720399,
+    -0.5520014919433253,
+    -0.4562980630511461,
+    -0.3981357517488932,
+    -0.3635615468435468,
+    -0.3310916015450682,
+    -0.3088741245784936,
+    -0.28290038284701374,
+    -0.2643068802639535,
+    -0.24688281757560815,
+    -0.2321973383415797,
+    -0.2186558661925584,
+    -0.2084843271974747,
+    -0.1964147962431288,
+    -0.18660818596329,
+    -0.17498427295551522,
+    -0.1661104730357497,
+    -0.1572496219685465,
+    -0.14887619852998676,
+    -0.14107029119552825,
+    -0.13388273720130459,
+    -0.12834323851295185,
+    -0.12237655234112962,
+    -0.11690242914485302,
+    -0.11163915727583915,
+    -0.106247706147866,
+    -0.09985319767621725,
+    -0.09362213714074946,
+    -0.08871824732745695,
+    -0.08418820738059864,
+    -0.07887823912385511,
+    -0.07474198642053018,
+    -0.07049699257694618,
+    -0.06683922945830978,
+    -0.06244053782781751,
+    -0.058704399365863726,
+    -0.05360253647355047,
+    -0.04989003946122339,
+    -0.04631422234212927,
+    -0.04291655380321093,
+    -0.038356202401660315,
+    -0.03407288062783863,
+    -0.029920944350482287,
+    -0.026355645605949385,
+    -0.021954751199081,
+    -0.018051512872046167,
+    -0.01415496191219201,
+    -0.010527686791316713,
+    -0.006913703109504258,
+    -0.003732468218753236,
+    0.0,
+    0.004095186189937124,
+    0.00813846381979949,
+    0.012711446139691761,
+    0.01641303027008343,
+    0.019974184115602416,
+    0.02394399545200369,
+    0.02723216603766786,
+    0.03136388979744969,
+    0.0342287525900462,
+    0.0383723277869813,
+    0.042551939813740745,
+    0.04679492891167375,
+    0.05053387599433768,
+    0.05509235610314078,
+    0.059345126687379644,
+    0.06347576906236674,
+    0.06788203516160952,
+    0.0720586192495949,
+    0.07694647046421796,
+    0.08092935697051883,
+    0.0857148107047573,
+    0.09219559738426916,
+    0.09737481032855815,
+    0.10356252186848672,
+    0.10953212236423579,
+    0.11470211494051284,
+    0.12112691418287024,
+    0.12690276589442565,
+    0.13434745769835618,
+    0.14147428716077606,
+    0.15085863387687326,
+    0.1582610580090276,
+    0.16602573355563283,
+    0.17607807479786164,
+    0.1872325430543722,
+    0.19942688130484953,
+    0.21296863234087873,
+    0.2289407407757623,
+    0.2449931726461835,
+    0.2655371790592739,
+    0.2864777273658032,
+    0.316229658132452,
+    0.3486193225413319,
+    0.399596241904197,
+    0.4623249166514356,
+    0.5457205828620381,
+    0.6269021713976033,
+    0.873813105202234,
+    1.2890387775560552,
+    3.0119442596709707
+  ],
+  "schema_version": 2,
+  "shrinkage": 1.0,
+  "source_url_pattern": "https://mopsov.twse.com.tw/nas/t21/{sii|otc}/t21sc03_{roc_year}_{month}_0.html",
+  "split_sample_counts": {
+    "test": 6619,
+    "train": 13917,
+    "validation": 6450
+  },
+  "splits": {
+    "test": "observed 2024-01 to 2024-12; targets end <= 2025-12",
+    "train": "observed <= 2021-12; targets end <= 2022-12",
+    "validation": "observed 2023-01 to 2023-12"
+  },
+  "status": "experimental",
+  "target": "未來連續 12 個月營收總和相對過去連續 12 個月營收總和的成長率",
+  "test_metrics": {
+    "brier_score": 0.23144610157324708,
+    "direction_accuracy": 0.6484363196857531,
+    "interval_80_coverage": 0.8242936999546759,
+    "mae": 0.17028672160135588,
+    "median_absolute_error": 0.09733354776228127,
+    "positive_precision": 0.6740957966764418,
+    "positive_recall": 0.8393378773125608,
+    "rmse": 0.30299624799358316,
+    "sample_count": 6619
+  },
+  "training_data_sha256": "f06d65842ed77e913971a74d163834cc71e1cc9a162aaa17573d9529e87407ab",
+  "update_frequency": {
+    "inference": "after official monthly revenue release",
+    "retrain": "at least annually with a fresh deployment gate"
+  },
+  "validation_selection": {
+    "candidate_count": 105,
+    "candidate_family": "ridge + monotonic shrinkage + median-MAE calibration",
+    "selection_period": "observed 2023-01 to 2023-12 only",
+    "validation_mae": 0.17723967304185217
+  }
+}

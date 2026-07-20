@@ -157,6 +157,32 @@ def _history_from_archives(
     return [item for item in results if item is not None]
 
 
+def _enrich_comparisons(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Derive comparable monthly fields absent from the archive download."""
+    by_period = {
+        item["year"] * 12 + item["month"] - 1: item
+        for item in records
+        if item.get("year") is not None and item.get("month") is not None
+    }
+    for period, item in by_period.items():
+        revenue = _number(item.get("revenue"))
+        previous = by_period.get(period - 1)
+        year_ago = by_period.get(period - 12)
+        previous_revenue = _number((previous or {}).get("revenue"))
+        year_ago_revenue = _number((year_ago or {}).get("revenue"))
+        item.setdefault("prev_month_revenue", previous_revenue)
+        item.setdefault("last_year_revenue", year_ago_revenue)
+        if item.get("mom") is None and revenue is not None and previous_revenue:
+            item["mom"] = (revenue / previous_revenue - 1) * 100
+        else:
+            item.setdefault("mom", None)
+        if item.get("yoy") is None and revenue is not None and year_ago_revenue:
+            item["yoy"] = (revenue / year_ago_revenue - 1) * 100
+        else:
+            item.setdefault("yoy", None)
+    return records
+
+
 def _fetch_chunk(
     stock_id: str, periods: Sequence[Tuple[int, int]]
 ) -> List[Dict[str, Any]]:
@@ -227,7 +253,7 @@ def get_monthly_revenue_history(
         stock_id, f"mops_revenue_history_v1:{cache_key}", max_age_sec=86400
     )
     if cached is not None:
-        return cached
+        return _enrich_comparisons(cached)
     periods = _periods(end_year, end_month, months)
     records = _history_from_archives(stock_id, market, periods)
     if latest_record:
@@ -239,6 +265,7 @@ def get_monthly_revenue_history(
         ]
         records.append(latest_record)
     records.sort(key=lambda item: (item["year"], item["month"]))
+    _enrich_comparisons(records)
     if len(records) < 24:
         raise OfficialDataMissing(
             f"MOPS {stock_id} 只有 {len(records)} 個月，成長模型至少需要 24 個月"

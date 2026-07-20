@@ -22,8 +22,9 @@ sys.path.insert(0, str(ROOT))
 from models.growth_features import FEATURE_NAMES, extract_growth_features, period_index  # noqa: E402
 
 
-MODEL_VERSION = "growth_revenue_v1"
+MODEL_VERSION = "growth_revenue_v2"
 TARGET_DESCRIPTION = "未來連續 12 個月營收總和相對過去連續 12 個月營收總和的成長率"
+HISTORY_MONTHS = 24
 
 
 def file_sha256(path: Path) -> str:
@@ -49,7 +50,7 @@ def build_samples(frame: pd.DataFrame) -> pd.DataFrame:
             month = observed % 12 + 1
             if month not in (3, 6, 9, 12):
                 continue
-            history_periods = list(range(observed - 23, observed + 1))
+            history_periods = list(range(observed - HISTORY_MONTHS + 1, observed + 1))
             future_periods = list(range(observed + 1, observed + 13))
             if not all(period in values for period in history_periods + future_periods):
                 continue
@@ -96,6 +97,25 @@ def fit_ridge(x: np.ndarray, y: np.ndarray, alpha: float) -> Tuple[float, np.nda
 
 def predict(x: np.ndarray, intercept: float, coefficients: np.ndarray) -> np.ndarray:
     return np.clip(intercept + x @ coefficients, -0.8, 3.0)
+
+
+def calibrate_for_mae(
+    raw_prediction: np.ndarray,
+    actual: np.ndarray,
+    shrinkage: float,
+) -> Tuple[np.ndarray, float]:
+    """Shrink to the no-growth prior and fit a validation-only median offset.
+
+    The target is evaluated with MAE, whose optimal central estimate is a
+    conditional median rather than a conditional mean.  Ridge regression is
+    intentionally retained for a small, inspectable formula; this final
+    calibration counteracts its squared-error bias without looking at the
+    held-out test year.  ``shrinkage`` is constrained to [0, 1], so it can
+    only reduce an unstable forecast's distance from the no-growth prior.
+    """
+    provisional = np.asarray(raw_prediction, dtype=float) * float(shrinkage)
+    offset = float(np.median(np.asarray(actual, dtype=float) - provisional))
+    return np.clip(provisional + offset, -0.8, 3.0), offset
 
 
 def positive_probabilities(
@@ -167,13 +187,16 @@ def write_model_card(path: Path, artifact: Dict) -> None:
     baseline = artifact["baseline_metrics"]
     gates = artifact["deployment_gate"]
     lines = [
-        "# Growth Revenue Model v1",
+        "# Growth Revenue Model v2",
         "",
         "## 白話結論",
         "",
         f"- 目標：{TARGET_DESCRIPTION}。",
         f"- 測試期間：{artifact['splits']['test']}，共 {metrics['sample_count']:,} 筆。",
         f"- 模型 MAE：{metrics['mae']:.3f}；最佳基準 MAE：{baseline['best_mae']:.3f}。",
+        f"- 驗證期選出的公式：{artifact['validation_selection']['candidate_family']}；"
+        f"候選數 {artifact['validation_selection']['candidate_count']}，"
+        f"驗證 MAE {artifact['validation_selection']['validation_mae']:.3f}。",
         f"- 方向命中率：{metrics['direction_accuracy']:.3f}；正成長 precision／recall：{metrics['positive_precision']:.3f}／{metrics['positive_recall']:.3f}。",
         f"- Brier score：{metrics['brier_score']:.3f}；80% 預測區間覆蓋率：{metrics['interval_80_coverage']:.3f}。",
         f"- 部署門檻：{'通過' if gates['passed'] else '未通過'}。",
@@ -190,6 +213,21 @@ def write_model_card(path: Path, artifact: Dict) -> None:
         f"- 最後測試：{artifact['splits']['test']}。",
         "- 只使用觀測日以前 24 個月營收；target 使用其後 12 個月。",
         "- 訓練 target 最晚結束於 2022-12，驗證從 2023-01 才開始。",
+        f"- 母體涵蓋：來源 {artifact['population_coverage']['source_issuer_count']:,} 家、"
+        f"合格 {artifact['population_coverage']['eligible_issuer_count']:,} 家、"
+        f"測試 {artifact['population_coverage']['test_issuer_count']:,} 家上市／上櫃公司。",
+        "",
+        "## 公式與選擇方法",
+        "",
+        "```text",
+        artifact["formula"]["raw_equation"],
+        artifact["formula"]["prediction_equation"],
+        "```",
+        "",
+        "- 特徵：近 3／6／12 個月營收年增率、成長加速度、近 3 個月動能、月年增率波動度、對數營收趨勢年化、季節性變異與近 12 個月營收規模 log10。",
+        "- 候選：五種 ridge 懲罰搭配 0 到 1、每 0.05 一格的收縮係數；中位殘差校正只用驗證期，因 MAE 的最佳中心估計是中位數。",
+        "- 2024 測試期不參與候選選擇或校正。正式評級門檻未通過前，字母結果只能是實驗參考。",
+        "- 未來若通過全部門檻，A–F 規則依 artifact 內的 prediction 與 positive_growth_probability 門檻執行；未通過時不產生正式評級。",
         "",
         "## 事先門檻",
         "",
@@ -208,6 +246,8 @@ def write_model_card(path: Path, artifact: Dict) -> None:
             "- 本模型預測公司營收，不預測股價報酬，也未納入交易成本。",
             "- ETF 不適用；金融公司財務安全另用專用模型。",
             "- 取得真正 point-in-time 資料及更多滾動樣本外年份前，只能標示為實驗性模型。",
+            "- 公式採固定候選集，僅以 2023 驗證期選擇；2024 測試期不參與選擇或校準。",
+            "- 本項僅供研究與教學參考，不構成投資建議或報酬保證。",
             "",
         ]
     )
@@ -248,24 +288,40 @@ def train(data_path: Path) -> Dict:
     y_validation = validation_set.target_growth.to_numpy(float)
     y_test = test_set.target_growth.to_numpy(float)
 
+    # This candidate family is fixed before the 2024 holdout is read: five
+    # ridge penalties and 21 monotonic shrinkage values. Selection uses 2023
+    # only, then the 2024 cohort is evaluated once at the end.
     candidates = []
     for alpha in (0.1, 1.0, 10.0, 100.0, 1000.0):
         intercept, coefficients = fit_ridge(x_train, y_train, alpha)
-        validation_prediction = predict(x_validation, intercept, coefficients)
-        candidates.append(
-            (
-                float(np.mean(np.abs(validation_prediction - y_validation))),
-                alpha,
-                intercept,
-                coefficients,
-                validation_prediction,
+        raw_validation_prediction = predict(x_validation, intercept, coefficients)
+        for shrinkage in np.linspace(0.0, 1.0, 21):
+            validation_prediction, offset = calibrate_for_mae(
+                raw_validation_prediction, y_validation, float(shrinkage)
             )
-        )
-    _, alpha, intercept, coefficients, validation_prediction = min(
-        candidates, key=lambda item: item[0]
-    )
+            candidates.append(
+                {
+                    "validation_mae": float(
+                        np.mean(np.abs(validation_prediction - y_validation))
+                    ),
+                    "alpha": float(alpha),
+                    "shrinkage": float(shrinkage),
+                    "median_calibration_offset": float(offset),
+                    "intercept": float(intercept),
+                    "coefficients": coefficients,
+                    "validation_prediction": validation_prediction,
+                }
+            )
+    selected = min(candidates, key=lambda item: item["validation_mae"])
+    alpha = selected["alpha"]
+    shrinkage = selected["shrinkage"]
+    offset = selected["median_calibration_offset"]
+    intercept = selected["intercept"]
+    coefficients = selected["coefficients"]
+    validation_prediction = selected["validation_prediction"]
     residuals = y_validation - validation_prediction
-    test_prediction = predict(x_test, intercept, coefficients)
+    raw_test_prediction = predict(x_test, intercept, coefficients)
+    test_prediction = np.clip(raw_test_prediction * shrinkage + offset, -0.8, 3.0)
     test_probabilities = positive_probabilities(test_prediction, residuals)
     metrics = {
         "sample_count": int(len(test_set)),
@@ -322,8 +378,25 @@ def train(data_path: Path) -> Dict:
             "passed": False,
         },
     }
+    market_counts = {
+        str(market): int(count)
+        for market, count in test_set.groupby("market")["stock_id"].nunique().items()
+    }
+    population = {
+        "source_record_count": int(len(frame)),
+        "source_issuer_count": int(frame["stock_id"].nunique()),
+        "eligible_issuer_count": int(samples["stock_id"].nunique()),
+        "test_issuer_count": int(test_set["stock_id"].nunique()),
+        "test_issuer_count_by_market": market_counts,
+        "test_sample_count": int(len(test_set)),
+        "coverage_note": (
+            "All issuers with 24 consecutive reported months, a positive trailing "
+            "revenue base, and an in-scope future target are included; this is not "
+            "a single-security or single-industry backtest."
+        ),
+    }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "model_version": MODEL_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "target": TARGET_DESCRIPTION,
@@ -336,11 +409,34 @@ def train(data_path: Path) -> Dict:
         },
         "benchmark": "best MAE of zero-growth and trailing-12-month-growth baselines",
         "features": FEATURE_NAMES,
+        "history_months": HISTORY_MONTHS,
         "feature_mean": mean.tolist(),
         "feature_std": std.tolist(),
         "intercept": intercept,
         "coefficients": coefficients.tolist(),
         "alpha": alpha,
+        "shrinkage": shrinkage,
+        "median_calibration_offset": offset,
+        "validation_selection": {
+            "candidate_family": "ridge + monotonic shrinkage + median-MAE calibration",
+            "candidate_count": int(len(candidates)),
+            "validation_mae": float(selected["validation_mae"]),
+            "selection_period": "observed 2023-01 to 2023-12 only",
+        },
+        "formula": {
+            "type": "ridge_shrink_median_v1",
+            "raw_equation": "raw = clip(-0.80, 3.00, intercept + sum(coefficient_i * ((feature_i - mean_i) / std_i)))",
+            "prediction_equation": "prediction = clip(-0.80, 3.00, shrinkage * raw + median_calibration_offset)",
+            "units": "decimal growth rate; 0.10 means +10% next-12-month revenue growth",
+            "grade_rule": {
+                "A": "prediction >= 0.15 and positive_growth_probability >= 0.80",
+                "B": "prediction >= 0.08 and positive_growth_probability >= 0.70",
+                "C": "prediction >= 0.00 and positive_growth_probability >= 0.58",
+                "D": "positive_growth_probability >= 0.42",
+                "E": "positive_growth_probability >= 0.30",
+                "F": "otherwise",
+            },
+        },
         "residual_quantiles": [
             float(value) for value in np.quantile(residuals, np.linspace(0, 1, 101))
         ],
@@ -359,6 +455,7 @@ def train(data_path: Path) -> Dict:
             "validation": int(len(validation_set)),
             "test": int(len(test_set)),
         },
+        "population_coverage": population,
         "test_metrics": metrics,
         "baseline_metrics": baseline,
         "deployment_gate": {

@@ -171,6 +171,8 @@ def _build_preview(
             "sector": basic_info.get("sector", ""),
             "market": stock_info.get("market", ""),
             "asset_type": stock_info.get("asset_type", ""),
+            "tracking_index": basic_info.get("tracking_index")
+            or stock_info.get("tracking_index", ""),
             "current_price": basic_info.get("current_price"),
             "day_change_pct": basic_info.get("day_change_pct"),
             "market_cap": basic_info.get("market_cap"),
@@ -367,6 +369,7 @@ def analyze(
     report_progress: Optional[Callable[[int, int, str], None]] = None,
     cancel_event=None,
     deadline: Optional[float] = None,
+    language: str = "zh-TW",
 ) -> AnalysisResult:
     emit = progress or (lambda _message: None)
     _checkpoint(cancel_event, deadline)
@@ -386,8 +389,13 @@ def analyze(
     basic_info = get_basic_stock_info(stock_id, stock_info, snapshot=snapshot)
     is_etf = bool(basic_info.get("is_etf"))
     stock_info = {**stock_info, "is_etf": is_etf}
+    language = "en" if language == "en" else "zh-TW"
     price_data, price_info = get_price_data(
-        stock_id, market=market, artifact_dir=artifact_dir, snapshot=snapshot
+        stock_id,
+        market=market,
+        artifact_dir=artifact_dir,
+        snapshot=snapshot,
+        language=language,
     )
     if not any(
         item.get("df") is not None and not item["df"].empty
@@ -414,7 +422,7 @@ def analyze(
             ) from exc
         try:
             revenue_data, revenue_chart = get_revenue_data(
-                stock_id, market=market, artifact_dir=artifact_dir
+                stock_id, market=market, artifact_dir=artifact_dir, language=language
             )
         except OfficialSchemaError as exc:
             raise AnalysisError(
@@ -426,6 +434,7 @@ def analyze(
             artifact_dir=artifact_dir,
             snapshot=snapshot,
             official_financials=financial_snapshot,
+            language=language,
         )
         if not eps_data:
             raise AnalysisError("季度 EPS 資料不足，無法執行個股估值。")
@@ -497,7 +506,13 @@ def analyze(
                 raise AnalysisError(
                     f"官方歷史月營收格式已改變，已停止成長估計：{exc}"
                 ) from exc
-        safety_assessment = assess_company_safety(model_stock_info, price_info)
+        safety_assessment = assess_company_safety(
+            model_stock_info,
+            price_info,
+            balance_sheet=balance_sheet,
+            financials=financials,
+            financial_snapshot=financial_snapshot,
+        )
     model_assessments = {
         "growth": growth_assessment,
         "safety": safety_assessment,
@@ -595,6 +610,7 @@ def analyze(
 def generate_report(
     result: AnalysisResult,
     *,
+    language: str = "zh-TW",
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     cancel_event=None,
     deadline: Optional[float] = None,
@@ -611,4 +627,5 @@ def generate_report(
     return PDFReport(
         **result.report_context,
         progress_callback=guarded_progress,
+        language=language,
     ).generate()

@@ -1,6 +1,9 @@
 import { cancelTask as cancelTaskRequest, getTask, requestReport, searchStocks, shutdown, startAnalysis, streamAnalysis } from "./api.js";
 import { byId, node, replace } from "./dom.js";
 import { downloadSummaryCsv } from "./export.js";
+import { getLocale, initI18n, t } from "./i18n.js";
+import { initBeginnerMode, updateBeginnerGuide } from "./beginner.js";
+import { initLearning } from "./learning.js";
 import { renderResult } from "./render.js";
 
 const ACTIVE_TASK_KEY = "twstock.activeTask.v1";
@@ -31,7 +34,7 @@ let lastEventId = 0;
 
 function toast(message) {
   const element = byId("toast");
-  element.textContent = message;
+  element.textContent = t(message);
   element.hidden = false;
   window.clearTimeout(toast.timer);
   toast.timer = window.setTimeout(() => { element.hidden = true; }, 5200);
@@ -40,16 +43,16 @@ function toast(message) {
 function setBusy(busy, label = "分析中…") {
   byId("analyzeButton").disabled = busy;
   byId("stockQuery").disabled = busy;
-  byId("analyzeButton").textContent = busy ? label : "開始分析";
+  byId("analyzeButton").textContent = t(busy ? label : "開始分析");
 }
 
 function setWorkflow(state, { title, detail, badge, tone = "running" }) {
   const panel = byId("analysisProgress");
   panel.hidden = false;
   panel.dataset.state = state;
-  byId("progressText").textContent = title;
-  byId("progressDetail").textContent = detail;
-  byId("progressState").textContent = badge;
+  byId("progressText").textContent = t(title);
+  byId("progressDetail").textContent = t(detail);
+  byId("progressState").textContent = t(badge);
   byId("progressState").dataset.tone = tone;
 }
 
@@ -59,7 +62,7 @@ function updateStepStates(activeStep, detail = "處理中") {
     const state = step < activeStep ? "complete" : step === activeStep ? "active" : "waiting";
     item.dataset.state = state;
     const status = item.querySelector("small");
-    if (status) status.textContent = state === "complete" ? "完成" : state === "active" ? detail : "等待中";
+    if (status) status.textContent = t(state === "complete" ? "完成" : state === "active" ? detail : "等待中");
   }
 }
 
@@ -67,11 +70,11 @@ function completeAnalysisSteps() {
   for (const item of byId("analysisSteps").children) {
     item.dataset.state = "complete";
     const status = item.querySelector("small");
-    if (status) status.textContent = "完成";
+    if (status) status.textContent = t("完成");
   }
   byId("progressBar").max = 5;
   byId("progressBar").value = 5;
-  byId("progressCounter").textContent = "分析完成";
+  byId("progressCounter").textContent = t("分析完成");
 }
 
 function resetWorkflow() {
@@ -182,14 +185,15 @@ function updateProgress(message) {
 
 function setResultStatus(state, title, detail) {
   byId("resultStatus").dataset.state = state;
-  byId("resultStatusTitle").textContent = title;
-  byId("resultStatusText").textContent = detail;
+  byId("resultStatusTitle").textContent = t(title);
+  byId("resultStatusText").textContent = t(detail);
 }
 
 function handlePreview(data, { scroll = true } = {}) {
   currentResult = data;
   try {
     renderResult(data);
+    updateBeginnerGuide(data);
     resultRendered = true;
   } catch (error) {
     console.error("Result rendering failed", error);
@@ -242,7 +246,8 @@ function handleReportProgress(report) {
 
 function setDownload(filename) {
   byId("generatePdf").hidden = true;
-  for (const id of ["downloadPdf", "progressDownloadPdf"]) {
+  byId("downloadPdf").hidden = true;
+  for (const id of ["progressDownloadPdf"]) {
     const link = byId(id);
     link.href = `/download/${encodeURIComponent(filename)}`;
     link.hidden = false;
@@ -438,7 +443,7 @@ async function analyze(query) {
     badge: "準備中",
   });
   try {
-    const { task_id: taskId } = await startAnalysis(value);
+    const { task_id: taskId } = await startAnalysis(value, getLocale());
     activeTaskId = taskId;
     byId("cancelTask").hidden = false;
     sessionStorage.setItem(ACTIVE_TASK_KEY, JSON.stringify({ taskId, query: value }));
@@ -457,7 +462,7 @@ async function generatePdf() {
   terminalHandled = false;
   setBusy(true, "PDF 產生中…");
   byId("reportProgress").hidden = false;
-  byId("reportProgressTitle").textContent = "PDF 報告產生中";
+  byId("reportProgressTitle").textContent = t("PDF 報告產生中");
   byId("reportProgressText").textContent = "正在準備報告內容";
   byId("reportProgressBar").max = 1;
   byId("reportProgressBar").value = 0;
@@ -494,6 +499,10 @@ function focusForAnotherAnalysis() {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+initI18n();
+initLearning();
+initBeginnerMode();
+
 byId("searchForm").addEventListener("submit", (event) => { event.preventDefault(); analyze(byId("stockQuery").value); });
 byId("stockQuery").addEventListener("input", () => { window.clearTimeout(searchTimer); searchTimer = window.setTimeout(updateSuggestions, 180); });
 byId("stockQuery").addEventListener("keydown", (event) => {
@@ -504,17 +513,20 @@ byId("stockQuery").addEventListener("keydown", (event) => {
 });
 byId("stockQuery").addEventListener("blur", () => window.setTimeout(hideSuggestions, 120));
 for (const button of document.querySelectorAll("[data-query]")) button.addEventListener("click", () => { byId("stockQuery").value = button.dataset.query; analyze(button.dataset.query); });
-byId("exportCsv").addEventListener("click", () => { if (currentResult) downloadSummaryCsv(currentResult); });
+byId("exportCsv").addEventListener("click", () => { if (currentResult) downloadSummaryCsv(currentResult, getLocale()); });
 byId("generatePdf").addEventListener("click", generatePdf);
 byId("cancelTask").addEventListener("click", cancelCurrentTask);
 byId("viewResults").addEventListener("click", () => { if (resultRendered) window.scrollTo({ top: byId("resultView").offsetTop - 76, behavior: "smooth" }); });
 byId("retryAnalysis").addEventListener("click", () => analyze(lastQuery || byId("stockQuery").value));
 byId("analyzeAnother").addEventListener("click", focusForAnotherAnalysis);
-byId("shutdownApp").addEventListener("click", async () => {
-  const token = document.querySelector('meta[name="shutdown-token"]')?.content || "";
-  try { await shutdown(token); document.body.replaceChildren(node("main", { className: "empty-state" }, [node("h1", { text: "服務已關閉" }), node("p", { text: "現在可以關閉這個瀏覽器分頁。" })])); }
-  catch (error) { toast(error.message || "無法關閉服務。"); }
-});
+const shutdownButton = byId("shutdownApp");
+if (shutdownButton) {
+  shutdownButton.addEventListener("click", async () => {
+    const token = document.querySelector('meta[name="shutdown-token"]')?.content || "";
+    try { await shutdown(token); document.body.replaceChildren(node("main", { className: "empty-state" }, [node("h1", { text: "服務已關閉" }), node("p", { text: "現在可以關閉這個瀏覽器分頁。" })])); }
+    catch (error) { toast(error.message || "無法關閉服務。"); }
+  });
+}
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && activeTaskId && !terminalHandled) recoverTask(activeTaskId).catch(() => {});

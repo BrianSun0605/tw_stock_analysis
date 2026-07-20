@@ -60,6 +60,34 @@ def test_official_revenue_has_value_source_period_unit_and_status(monkeypatch):
     assert item["data_value"]["currency"] == "TWD"
 
 
+def test_revenue_data_expands_latest_official_month_with_mops_history(monkeypatch):
+    latest = {
+        "year": 2026,
+        "month": 6,
+        "revenue": 442_679_969,
+        "source": "TWSE OpenAPI",
+        "status": "official",
+    }
+    history = [
+        {"year": 2024, "month": 7, "revenue": 1},
+        latest,
+    ]
+    monkeypatch.setattr(stock_data, "get_official_revenue", lambda *_args: [latest])
+    monkeypatch.setattr(
+        stock_data,
+        "get_monthly_revenue_history",
+        lambda stock_id, **kwargs: history,
+    )
+    monkeypatch.setattr(
+        stock_data, "_plot_revenue_chart", lambda *_args, **_kwargs: None
+    )
+
+    result, chart = stock_data.get_revenue_data("2330", market="上市")
+
+    assert result == history
+    assert chart is None
+
+
 def test_report_type_routing_covers_company_and_financial_variants():
     assert (
         official.report_type_candidates({"name": "台積電", "industry": "半導體"})[0]

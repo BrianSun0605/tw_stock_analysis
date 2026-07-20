@@ -1,5 +1,7 @@
 # Financial Safety Screen v1
 
+> **歷史版本／不可作為現行實作依據。** 任意 0–100 加權與實驗 A～F 已停止使用。一般公司現行規則見 [`financial_structure_reference_v3.md`](financial_structure_reference_v3.md)；金融與不適用資產仍停止計算，不能以舊版分數補足。
+
 ## 白話結論
 
 - 這是一般公司的財務比率篩檢，不是「未來一定不會倒閉」的保證，也不是已校準的破產機率。

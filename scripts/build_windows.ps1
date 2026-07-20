@@ -3,7 +3,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = if ($PSScriptRoot) {
+    Split-Path -Parent $PSScriptRoot
+} else {
+    (Get-Location).Path
+}
 Set-Location -LiteralPath $projectRoot
 $env:TWSTOCK_APP_MODE = "dev"
 $versionLine = Get-Content -LiteralPath "version.py" |
@@ -28,8 +32,11 @@ if ($LASTEXITCODE -ne 0) { throw "pytest 失敗" }
 foreach ($javascript in @(
     "static\js\api.js",
     "static\js\app.js",
+    "static\js\beginner.js",
     "static\js\dom.js",
     "static\js\export.js",
+    "static\js\i18n.js",
+    "static\js\learning.js",
     "static\js\render.js",
     "static\service-worker.js"
 )) {

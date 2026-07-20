@@ -24,6 +24,7 @@ picture/border/
 
 # Generated application data
 app.lock
+instance.json
 cache/
 output/
 tmp/

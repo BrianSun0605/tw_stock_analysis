@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#123047">
-  <meta name="shutdown-token" content="{{ shutdown_token }}">
+  {% if local_shutdown_enabled %}<meta name="shutdown-token" content="{{ shutdown_token }}">{% endif %}
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/picture/icon/app-icon.svg">
-  <link rel="stylesheet" href="/static/css/app.css?v=9">
+  <link rel="stylesheet" href="/static/css/app.css?v=20">
   <title>台股研究室｜投資分析工具</title>
 </head>
 <body>
@@ -19,8 +19,9 @@
         <span><strong>台股研究室</strong><small>資料驅動的研究輔助工具</small></span>
       </a>
       <div class="header-actions">
-        <span class="local-badge"><span aria-hidden="true"></span>本機運行</span>
-        <button id="shutdownApp" class="icon-button" type="button" title="關閉本機服務" aria-label="關閉本機服務">×</button>
+        <label class="language-switch" for="languageSelect"><span>Language</span><select id="languageSelect" aria-label="Display language"><option value="zh-TW">繁中</option><option value="en">English</option></select></label>
+        <span class="local-badge"><span aria-hidden="true"></span>{% if public_mode %}線上展示版{% else %}本機運行{% endif %}</span>
+        {% if local_shutdown_enabled %}<button id="shutdownApp" class="icon-button" type="button" title="關閉本機服務" aria-label="關閉本機服務">×</button>{% endif %}
       </div>
     </div>
   </header>
@@ -103,6 +104,7 @@
         <button type="button" data-query="0050">0050 元大台灣50</button>
         <button type="button" data-query="2882">2882 國泰金</button>
       </div>
+      <button id="openLearningFromEmpty" class="button secondary learning-launch" type="button">投資小教室：完整投資學程</button>
     </section>
 
     <section id="resultView" class="results" tabindex="-1" hidden aria-labelledby="stockName">
@@ -138,55 +140,90 @@
           <button id="generatePdf" class="button primary" type="button" hidden>產生並下載 PDF</button>
           <a id="downloadPdf" class="button primary" href="#" hidden>下載 PDF 報告</a>
           <button id="exportCsv" class="button secondary" type="button" disabled>匯出摘要 CSV</button>
+          <button id="openLearning" class="button secondary" type="button">投資小教室 <span id="learningProgressLabel">0 / 220</span></button>
         </div>
       </header>
 
       <section id="factsSummary" class="facts-summary" aria-label="本次資料狀態"></section>
       <div id="qualityBanner" class="quality-banner" role="status"></div>
 
-      <section class="panel prediction-panel" aria-labelledby="modelTitle">
+      <section class="view-mode-bar" aria-label="分析閱讀模式">
+        <div><p class="eyebrow">READING MODE</p><strong id="viewModeTitle">新手模式</strong><small id="viewModeDescription">先看重點、限制與下一個學習任務</small></div>
+        <div class="mode-switch" role="group" aria-label="切換分析閱讀模式">
+          <button id="beginnerModeButton" type="button" aria-pressed="true">新手模式</button>
+          <button id="advancedModeButton" type="button" aria-pressed="false">進階模式</button>
+        </div>
+      </section>
+
+      <section id="beginnerGuide" class="beginner-guide" aria-labelledby="beginnerGuideTitle"></section>
+
+      <section id="predictionPanel" class="panel prediction-panel advanced-content" aria-labelledby="modelTitle">
         <div class="panel-heading">
           <div><p class="eyebrow">MODEL ESTIMATES</p><h3 id="modelTitle">預估與風險篩檢</h3></div>
           <span class="method-tag">與可信資料分開</span>
         </div>
         <p id="modelSeparationNote" class="model-separation-note"></p>
+        <p id="modelDisclaimer" class="model-disclaimer"></p>
         <div class="model-card-grid">
-          <article class="model-card">
+          <article id="growthModelCard" class="model-card">
             <div class="model-card-heading"><h4>未來成長性</h4><span id="growthModelStatus">尚未驗證</span></div>
             <div id="growthModelDetails" class="metric-grid"></div>
             <p id="growthModelNote" class="panel-note"></p>
+            <details class="formula-disclosure">
+              <summary>查看指標計算公式</summary>
+              <div id="growthFormulaDetails" class="formula-body"></div>
+            </details>
           </article>
-          <article class="model-card">
+          <article id="safetyModelCard" class="model-card">
             <div class="model-card-heading"><h4 id="safetyModelTitle">公司財務安全</h4><span id="safetyModelStatus">資料不足</span></div>
             <div id="safetyModelDetails" class="metric-grid"></div>
             <p id="safetyModelNote" class="panel-note"></p>
+            <details class="formula-disclosure">
+              <summary>查看指標計算公式</summary>
+              <div id="safetyFormulaDetails" class="formula-body"></div>
+            </details>
           </article>
         </div>
       </section>
 
-      <section class="kpi-grid" aria-label="關鍵指標">
-        <article><span>歷史本益比</span><strong id="kpiPe">資料不足</strong><small>目前估計值</small></article>
-        <article><span>合理價</span><strong id="kpiFair">資料不足</strong><small>歷史 PE 分位法</small></article>
-        <article><span>健康度</span><strong id="kpiHealth">資料不足</strong><small id="kpiHealthLevel">資料覆蓋門檻 70%</small></article>
-        <article><span>股利殖利率</span><strong id="kpiYield">資料不足</strong><small id="kpiYieldBasis">最近完整年度</small></article>
-        <article><span>近月營收 YoY</span><strong id="kpiRevenue">資料不足</strong><small id="kpiRevenuePeriod">—</small></article>
-        <article><span>最新季 EPS</span><strong id="kpiEps">資料不足</strong><small id="kpiEpsPeriod">—</small></article>
+      <section id="kpiSummary" class="kpi-summary advanced-content" aria-label="優先檢視指標">
+        <div class="kpi-group kpi-group--valuation">
+          <div class="kpi-group-heading"><p id="kpiValuationEyebrow">PRICE & VALUE</p><h3 id="kpiValuationTitle">價格與估值</h3><small id="kpiValuationNote">市場價格是否已反映公司獲利</small></div>
+          <div class="kpi-grid">
+            <article id="kpiPeCard"><span id="kpiPeLabel">歷史本益比</span><strong id="kpiPe">資料不足</strong><small id="kpiPeBasis">目前估計值</small><button class="learn-term" type="button" data-learning-term="pe">看懂指標</button></article>
+            <article id="kpiFairCard"><span id="kpiFairLabel">合理價</span><strong id="kpiFair">資料不足</strong><small id="kpiFairBasis">歷史 PE 分位法</small><button class="learn-term" type="button" data-learning-term="fair_value">看懂指標</button></article>
+          </div>
+        </div>
+        <div class="kpi-group kpi-group--fundamentals">
+          <div class="kpi-group-heading"><p id="kpiFundamentalEyebrow">BUSINESS HEALTH</p><h3 id="kpiFundamentalTitle">公司體質與成長</h3><small id="kpiFundamentalNote">公司是否穩健，且營運是否正在成長</small></div>
+          <div class="kpi-grid">
+            <article id="kpiHealthCard"><span id="kpiHealthLabel">健康度</span><strong id="kpiHealth">資料不足</strong><small id="kpiHealthLevel">資料覆蓋門檻 70%</small><button class="learn-term" type="button" data-learning-term="financial_health">看懂指標</button></article>
+            <article id="kpiRevenueCard"><span id="kpiRevenueLabel">近月營收 YoY</span><strong id="kpiRevenue">資料不足</strong><small id="kpiRevenuePeriod">—</small><button class="learn-term" type="button" data-learning-term="revenue_yoy">看懂指標</button></article>
+            <article id="kpiEpsCard"><span id="kpiEpsLabel">最新季 EPS</span><strong id="kpiEps">資料不足</strong><small id="kpiEpsPeriod">—</small><button class="learn-term" type="button" data-learning-term="eps">看懂指標</button></article>
+          </div>
+        </div>
+        <div class="kpi-group kpi-group--income">
+          <div class="kpi-group-heading"><p id="kpiIncomeEyebrow">INCOME</p><h3 id="kpiIncomeTitle">收益</h3><small id="kpiIncomeNote">過去配息，不保證未來金額</small></div>
+          <div class="kpi-grid">
+            <article id="kpiYieldCard"><span id="kpiYieldLabel">股利殖利率</span><strong id="kpiYield">資料不足</strong><small id="kpiYieldBasis">最近完整年度</small><button class="learn-term" type="button" data-learning-term="yield">看懂指標</button></article>
+          </div>
+        </div>
       </section>
 
-      <div class="dashboard-grid">
+      <div id="advancedDashboard" class="dashboard-grid advanced-content">
         <div class="primary-column">
-          <section class="panel" aria-labelledby="valuationTitle">
-            <div class="panel-heading"><div><p class="eyebrow">VALUATION</p><h3 id="valuationTitle">估值檢視</h3></div><span class="method-tag">歷史資料法</span></div>
+          <section id="valuationPanel" class="panel" aria-labelledby="valuationTitle">
+            <div class="panel-heading"><div><p id="valuationEyebrow" class="eyebrow">VALUATION</p><h3 id="valuationTitle">估值檢視</h3></div><span id="valuationMethod" class="method-tag">歷史資料法</span></div>
             <div id="fairMetrics" class="metric-grid"></div>
             <p class="panel-note">估值區間依可取得之歷史本益比分位與 TTM EPS 推算，不代表未來目標價。</p>
           </section>
 
-          <section class="panel" aria-labelledby="healthTitle">
+          <section id="healthPanel" class="panel" aria-labelledby="healthTitle">
             <div class="panel-heading"><div><p class="eyebrow">FUNDAMENTAL HEALTH</p><h3 id="healthTitle">七維度健康度</h3></div><span id="healthCoverage" class="method-tag">覆蓋率 —</span></div>
             <div id="healthComponents" class="score-list"></div>
           </section>
 
-          <section class="panel" aria-labelledby="financialTitle">
+          <section id="financialPanel" class="panel" aria-labelledby="financialTitle">
             <div class="panel-heading"><div><p class="eyebrow">FINANCIAL SNAPSHOT</p><h3 id="financialTitle">財務與交易指標</h3></div></div>
             <div id="financialMetrics" class="metric-grid dense"></div>
           </section>
@@ -196,7 +233,7 @@
             <div id="chartGrid" class="chart-grid"></div>
           </section>
 
-          <section class="panel" aria-labelledby="peerTitle">
+          <section id="peerPanel" class="panel" aria-labelledby="peerTitle">
             <div class="panel-heading"><div><p class="eyebrow">PEER SET</p><h3 id="peerTitle">同產業參考</h3></div></div>
             <div class="table-wrap" tabindex="0" aria-label="同業比較表，可左右捲動"><table><thead><tr><th>代號</th><th>名稱</th><th>股價</th><th>本益比</th><th>殖利率</th><th>市值</th></tr></thead><tbody id="peerTable"></tbody></table></div>
           </section>
@@ -208,7 +245,7 @@
             <ul id="riskList" class="risk-list"></ul>
           </section>
 
-          <section class="panel" aria-labelledby="qualityTitle">
+          <section id="qualityPanel" class="panel" aria-labelledby="qualityTitle">
             <div class="panel-heading"><div><p class="eyebrow">QUALITY MODELS</p><h3 id="qualityTitle">品質模型</h3></div></div>
             <div id="qualityMetrics" class="metric-grid single"></div>
           </section>
@@ -219,27 +256,29 @@
             <ul id="calendarList" class="event-list"></ul>
           </section>
 
-          <section class="panel" aria-labelledby="newsTitle">
-            <div class="panel-heading"><div><p class="eyebrow">PUBLIC NEWS</p><h3 id="newsTitle">近期公開新聞</h3></div><span class="method-tag">關鍵字分類</span></div>
-            <div id="newsStatus" class="news-status"></div>
-            <section class="news-group" aria-labelledby="companyNewsTitle">
-              <h4 id="companyNewsTitle">公司相關</h4>
-              <ol id="companyNewsList" class="news-list"></ol>
-            </section>
-            <section class="news-group" aria-labelledby="industryNewsTitle">
-              <h4 id="industryNewsTitle">產業備援</h4>
-              <ol id="industryNewsList" class="news-list"></ol>
-            </section>
-          </section>
+          <details id="newsDetails" class="panel collapsible-panel" aria-labelledby="newsTitle">
+            <summary><span><span class="eyebrow">PUBLIC NEWS</span><strong id="newsTitle">近期公開新聞</strong></span><span class="method-tag">關鍵字分類</span></summary>
+            <div class="collapsible-panel-body">
+              <div id="newsStatus" class="news-status"></div>
+              <section class="news-group" aria-labelledby="companyNewsTitle">
+                <h4 id="companyNewsTitle">公司相關</h4>
+                <ol id="companyNewsList" class="news-list"></ol>
+              </section>
+              <section class="news-group" aria-labelledby="industryNewsTitle">
+                <h4 id="industryNewsTitle">產業備援</h4>
+                <ol id="industryNewsList" class="news-list"></ol>
+              </section>
+            </div>
+          </details>
 
-          <section class="panel" aria-labelledby="sourceTitle">
-            <div class="panel-heading"><div><p class="eyebrow">DATA QUALITY</p><h3 id="sourceTitle">資料來源狀態</h3></div></div>
-            <dl id="dataSourceList" class="source-list"></dl>
-          </section>
+          <details id="sourceDetails" class="panel collapsible-panel" aria-labelledby="sourceTitle">
+            <summary><span><span class="eyebrow">DATA QUALITY</span><strong id="sourceTitle">資料來源狀態</strong></span></summary>
+            <div class="collapsible-panel-body"><dl id="dataSourceList" class="source-list"></dl></div>
+          </details>
         </aside>
       </div>
 
-      <details id="companyDetails" class="company-details">
+      <details id="companyDetails" class="company-details advanced-content">
         <summary>公司基本資料與說明</summary>
         <div id="companyBody"></div>
       </details>
@@ -250,6 +289,10 @@
     <p>本工具供研究與教學用途，不構成投資建議。第三方資料可能延遲、缺漏或受使用條款限制；交易前請核對 TWSE、TPEx 與公開資訊觀測站。</p>
   </footer>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="/static/js/app.js?v=7"></script>
+  <dialog id="learningDialog" class="learning-dialog" aria-labelledby="learningDialogTitle">
+    <div class="learning-dialog-header"><div><p class="eyebrow">INVESTMENT LEARNING</p><h2 id="learningDialogTitle">投資小教室</h2></div><button id="closeLearning" class="icon-button" type="button" aria-label="關閉投資小教室">×</button></div>
+    <div id="learningDialogContent"></div>
+  </dialog>
+  <script type="module" src="/static/js/app.js?v=20"></script>
 </body>
 </html>

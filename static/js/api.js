@@ -12,11 +12,11 @@ export async function searchStocks(query, signal) {
   return parseResponse(response);
 }
 
-export async function startAnalysis(query) {
+export async function startAnalysis(query, language = "zh-TW") {
   const response = await fetch("/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, language }),
   });
   return parseResponse(response);
 }

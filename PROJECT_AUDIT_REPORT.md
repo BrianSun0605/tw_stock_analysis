@@ -7,6 +7,14 @@
 - 再驗證日期：2026-07-19
 - 文件用途：後續 debug 與修正驗收 checklist
 
+> **2026-07-20 更新說明：** 本報告主體保留 2026-07-18／19 的稽核證據與當時決策，不能倒填成新的稽核結論。其後完成的功能、模型參考分級、雙語化與測試結果已同步記於 [PROGRESS.md](PROGRESS.md) 與 [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md)。本次文件同步後最新完整自動檢查為 123 項 pytest 通過，另通過 Ruff、編譯與 `pip check`。
+
+## 2026-07-20 後續修正摘要
+
+- 英文 UI、CSV、投資小教室與 PDF 已補齊；英文 PDF 的 PEG、風險訊號與分析敘述改由結構化資料輸出英文，而公司名稱、新聞等原始來源文字維持原文。
+- 投資小教室擴充為 7 個主題軌、44 個概念、220 題本機雙語題目，並提供主題／難度、錯題、星號重點題目及清除答題紀錄。來源驗證規則見 `docs/INVESTMENT_LEARNING_SOURCES.md`。
+- 成長僅顯示受限的研究／教育參考分級；一般公司財務安全使用 `financial_structure_reference_v3` 的透明 Z-ref A／C／E 參考。兩者都不是正式已驗證評級，原報告中對 point-in-time 資料、危機標籤與驗證不足的風險仍然成立。
+
 ## 已確認的產品方向
 
 以下產品方向已由產品負責人確認，不再列為待回答問題：
@@ -81,6 +89,10 @@
 | DBG-038 | ✅ 已修正並有測試 | ETN、REIT、特別股不再進入普通股成長／安全公式；在專用模型完成前顯示明確訊息且不產生評級或 PDF | models/growth_model.py、models/safety_model.py、services/analysis.py、tests/test_model_contracts.py |
 | DBG-039 | ✅ 已修正並有測試 | 真實手機結果頁曾因 body 最小寬度與資料來源雙欄清單產生整頁水平捲軸；移除強制 320px，窄畫面來源清單改單欄後，300px 視窗的 clientWidth 與 scrollWidth 均為 300 | static/css/app.css、tests/test_frontend_static.py |
 | DBG-040 | ✅ 已修正並有測試 | 關閉畫面出現後，Waitress 曾因 keep-alive 通道未清空而留下背景 EXE；現在會關閉監聽、工作執行緒與全部通道，最終打包 EXE 在 8 秒內退出 | webui.py、tests/test_runtime_resilience.py |
+| DBG-041 | ✅ 已修正並有測試 | PDF 的 CJK OTF/CFF 字型在部分閱讀器會產生繁中亂碼；PDF 改嵌入 TrueType 字型並驗證為 CIDFontType2，圖表仍使用 OTF | config.py、report/font.py、report/generator.py、tests/test_report_render.py |
+| DBG-042 | ✅ 已修正並有真實資料驗證 | TWSE／TPEx 月營收 OpenAPI 僅含最新一期，原畫面趨勢資料不足；現以 MOPS 官方歷史封存補足 24 個月並推導 MoM／YoY，2330 實測 2024-07～2026-06 正常 | stock/data.py、stock/mops_history.py、tests/test_official_financials.py、tests/test_model_contracts.py |
+| DBG-043 | ✅ 已修正並有真實資料驗證 | ETF 官方類別與 TPEx AUM 原本可能在 Yahoo 失敗時遺失，並誤顯示公司營收／EPS 缺資料；現保留 ETF metadata，使用 ETF 專屬資料與文案，0050 實測通過 | stock/data.py、services/analysis.py、static/js/render.js、tests/test_sources_and_models.py |
+| DBG-044 | ✅ 已修正並有測試 | 六張同質 KPI 卡片缺少新手閱讀順序；個股改分價格與估值／公司體質與成長／收益，ETF 改分市價與淨值／基金結構／交易與收益 | templates/index.html、static/css/app.css、static/js/render.js、tests/test_frontend_static.py |
 
 本輪一次性 harness 前兩次因測試類別名稱與圖表欄位大小寫寫錯而中止；修正 harness 後第三次完整執行。這兩次是檢查程式錯誤，不是產品 bug，沒有寫進上表。
 

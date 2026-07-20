@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 
 import yfinance as yf
 
@@ -15,8 +16,8 @@ APP_MODE = (
     .strip()
     .lower()
 )
-if APP_MODE not in {"dev", "release"}:
-    raise RuntimeError("TWSTOCK_APP_MODE must be dev or release")
+if APP_MODE not in {"dev", "release", "web"}:
+    raise RuntimeError("TWSTOCK_APP_MODE must be dev, release, or web")
 
 if APP_MODE == "release":
     local_appdata = os.environ.get("LOCALAPPDATA")
@@ -28,19 +29,46 @@ if APP_MODE == "release":
             os.path.join(local_appdata, "FatCatGameStudio", "TWStockAnalysis"),
         )
     )
+elif APP_MODE == "web":
+    # Public hosts such as Render provide an ephemeral filesystem.  Keep all
+    # runtime files in the system temporary directory (or a supplied writable
+    # mount) instead of attempting to write into the checked-out source tree.
+    DATA_ROOT = os.path.abspath(
+        os.environ.get(
+            "TWSTOCK_DATA_ROOT",
+            os.path.join(tempfile.gettempdir(), "twstock-analysis"),
+        )
+    )
 else:
     DATA_ROOT = BUNDLE_DIR
 
+IS_WEB_MODE = APP_MODE == "web"
+IS_DESKTOP_MODE = not IS_WEB_MODE
+
 CACHE_DIR = os.path.join(DATA_ROOT, "cache")
-CACHE_MAX_BYTES = 256 * 1024 * 1024
-CACHE_HIGH_WATER_BYTES = 200 * 1024 * 1024
-CACHE_EVICT_TARGET_BYTES = 160 * 1024 * 1024
-OUTPUT_MAX_BYTES = 250 * 1024 * 1024
-OUTPUT_TTL_SECONDS = 3 * 86400
-TASK_ARTIFACT_TTL_SECONDS = 86400
-CLEANUP_INTERVAL_SECONDS = 6 * 3600
-LOG_TTL_SECONDS = 14 * 86400
-LOG_MAX_BYTES = 20 * 1024 * 1024
+# The public demo has no persistent disk.  Smaller quotas prevent a short
+# burst of report downloads from exhausting the free instance's ephemeral
+# storage; desktop and developer modes retain their existing local limits.
+if IS_WEB_MODE:
+    CACHE_MAX_BYTES = 128 * 1024 * 1024
+    CACHE_HIGH_WATER_BYTES = 96 * 1024 * 1024
+    CACHE_EVICT_TARGET_BYTES = 72 * 1024 * 1024
+    OUTPUT_MAX_BYTES = 48 * 1024 * 1024
+    OUTPUT_TTL_SECONDS = 2 * 3600
+    TASK_ARTIFACT_TTL_SECONDS = 3600
+    CLEANUP_INTERVAL_SECONDS = 30 * 60
+    LOG_TTL_SECONDS = 2 * 86400
+    LOG_MAX_BYTES = 5 * 1024 * 1024
+else:
+    CACHE_MAX_BYTES = 256 * 1024 * 1024
+    CACHE_HIGH_WATER_BYTES = 200 * 1024 * 1024
+    CACHE_EVICT_TARGET_BYTES = 160 * 1024 * 1024
+    OUTPUT_MAX_BYTES = 250 * 1024 * 1024
+    OUTPUT_TTL_SECONDS = 3 * 86400
+    TASK_ARTIFACT_TTL_SECONDS = 86400
+    CLEANUP_INTERVAL_SECONDS = 6 * 3600
+    LOG_TTL_SECONDS = 14 * 86400
+    LOG_MAX_BYTES = 20 * 1024 * 1024
 FONT_DIR = os.path.join(BUNDLE_DIR, "fonts")
 OUTPUT_DIR = os.path.join(DATA_ROOT, "output")
 LOG_DIR = os.path.join(DATA_ROOT, "logs")
@@ -76,6 +104,12 @@ HEADERS = {
 
 TIMEOUT = 30
 
+# Matplotlib renders the supplied OTF correctly.  FPDF, however, can produce
+# broken CFF/Type0 Unicode mappings for this CJK OTF in some PDF viewers.  Use
+# the TrueType build exclusively for PDF text so its CIDFontType2 mapping is
+# portable; keep the OTF for charts.
+PDF_FONT_PATH = os.path.join(FONT_DIR, "NotoSansTC-Variable.ttf")
+PDF_FONT_PATH_BOLD = PDF_FONT_PATH
 FONT_PATH = os.path.join(FONT_DIR, "NotoSansTC-Regular.otf")
 FONT_PATH_BOLD = os.path.join(FONT_DIR, "NotoSansTC-Bold.otf")
 FONT_NAME = "NotoSansTC"

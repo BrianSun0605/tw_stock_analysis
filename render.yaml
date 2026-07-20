@@ -1,0 +1,28 @@
+services:
+  - type: web
+    # Change this to an unused lowercase, hyphenated name before first deploy.
+    name: tw-stock-research-demo
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: python webui.py
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 180
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: TWSTOCK_APP_MODE
+        value: web
+      - key: TWSTOCK_DATA_ROOT
+        value: /tmp/twstock-analysis
+      - key: MPLBACKEND
+        value: Agg
+      - key: MPLCONFIGDIR
+        value: /tmp/twstock-analysis/cache/matplotlib
+      # The free public demo accepts one resource-intensive analysis at a time.
+      - key: TWSTOCK_ANALYSES_PER_HOUR
+        value: "6"
+      - key: TWSTOCK_SEARCHES_PER_MINUTE
+        value: "60"
